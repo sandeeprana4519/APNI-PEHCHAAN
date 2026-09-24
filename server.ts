@@ -85,26 +85,102 @@ async function startServer() {
     }
   });
 
-  // Products API
+  const normalizeUrl = (u: string) => {
+    if (!u) return '';
+    const trimmed = u.trim();
+    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
+    return `https://${trimmed}.supabase.co`;
+  };
+
+  const DEFAULT_SB_URL = 'https://awzkiktbcfssifdxdvxr.supabase.co';
+  const DEFAULT_SB_KEY = 'sb_publishable_yicIcn3U8j5n6eCZEI2RUA_7LF_X-19';
+
+  const getSb = () => {
+    const rawUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || DEFAULT_SB_URL;
+    const key = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || DEFAULT_SB_KEY;
+    if (!rawUrl || !key) return null;
+    try {
+      return createClient(normalizeUrl(rawUrl), key, { auth: { persistSession: false } });
+    } catch {
+      return null;
+    }
+  };
+
+  const mapSupabaseProd = (r: any) => {
+    let gallery: string[] = [];
+    try {
+      gallery = typeof r.gallery_images === 'string' ? JSON.parse(r.gallery_images) : (r.gallery_images || []);
+    } catch {
+      gallery = [];
+    }
+    let tags: string[] = [];
+    try {
+      tags = typeof r.tags === 'string' ? JSON.parse(r.tags) : (r.tags || []);
+    } catch {
+      tags = [];
+    }
+    return {
+      id: String(r.id),
+      name: r.name || 'Untitled Product',
+      shortDescription: r.short_description || '',
+      fullDescription: r.full_description || '',
+      category: r.category,
+      subcategory: r.subcategory || '',
+      price: Number(r.price) || 0,
+      originalPrice: Number(r.original_price) || 0,
+      discount: Number(r.discount) || 0,
+      rating: Number(r.rating) || 4.8,
+      reviewCount: Number(r.review_count) || 0,
+      inStock: r.in_stock !== false,
+      image: r.image || '/apni-pehchaan-logo.jpg',
+      galleryImages: gallery,
+      platform: r.platform || 'Amazon',
+      affiliateUrl: r.affiliate_url || '#',
+      buttonText: r.button_text || 'Shop Now',
+      isFeatured: !!r.is_featured,
+      isTrending: !!r.is_trending,
+      isPublished: r.is_published !== false,
+      tags: tags,
+      seoTitle: r.seo_title || r.name,
+      seoDescription: r.seo_description || '',
+      createdAt: r.created_at || new Date().toISOString(),
+    };
+  };
+
+  const mapSupabaseCat = (r: any) => ({
+    id: String(r.id),
+    name: r.name,
+    slug: r.slug,
+    headline: r.headline || `${r.name} Heritage & Cultural Essentials`,
+    description: r.description || `Explore curated ${r.name} community products on APNI PEHCHAAN.`,
+    image: r.image || '/images/cat_gujjar_jaat_style_1790229006717.jpg',
+    itemCount: Number(r.item_count) || 0,
+  });
+
+  // Products API (Supabase Persistent Cloud Database + PostgreSQL)
   app.get('/api/products', async (req, res) => {
     try {
-      let prods = await getAllProducts();
-      // Lazy auto-seeding if database has no products yet
-      if (prods.length === 0) {
-        try {
-          for (const p of initialProducts) {
-            await upsertProduct(p);
-          }
-          prods = await getAllProducts();
-        } catch (seedErr) {
-          console.warn('Auto-seed products warning:', seedErr);
-          return res.json(initialProducts);
+      // 1. Primary: Load from Supabase
+      const sb = getSb();
+      if (sb) {
+        const { data, error } = await sb.from('products').select('*').order('created_at', { ascending: false });
+        if (!error && data && data.length > 0) {
+          return res.json(data.map(mapSupabaseProd));
         }
       }
-      res.json(prods);
+
+      // 2. Secondary: Load from Cloud SQL PostgreSQL
+      try {
+        let prods = await getAllProducts();
+        if (prods.length > 0) return res.json(prods);
+      } catch (sqlErr) {
+        // PostgreSQL unavailable
+      }
+
+      // 3. Fallback
+      res.json(initialProducts);
     } catch (error: any) {
       console.error('Failed to get products:', error);
-      // Local fallback so user frontend never crashes
       res.json(initialProducts);
     }
   });
@@ -115,8 +191,48 @@ async function startServer() {
       if (!productData || !productData.id || !productData.name) {
         return res.status(400).json({ error: 'Invalid product payload' });
       }
-      const saved = await upsertProduct(productData);
-      res.json({ success: true, product: saved });
+
+      // 1. Primary: Persist to Supabase
+      const sb = getSb();
+      if (sb) {
+        const sbRow = {
+          id: productData.id,
+          name: productData.name,
+          short_description: productData.shortDescription || '',
+          full_description: productData.fullDescription || '',
+          category: productData.category,
+          subcategory: productData.subcategory || '',
+          price: Math.round(productData.price || 0),
+          original_price: Math.round(productData.originalPrice || 0),
+          discount: Math.round(productData.discount || 0),
+          rating: productData.rating || 4.8,
+          review_count: productData.reviewCount || 0,
+          in_stock: productData.inStock !== false,
+          image: productData.image,
+          gallery_images: JSON.stringify(productData.galleryImages || []),
+          platform: productData.platform,
+          affiliate_url: productData.affiliateUrl,
+          button_text: productData.buttonText || 'Shop Now',
+          is_featured: !!productData.isFeatured,
+          is_trending: !!productData.isTrending,
+          is_published: productData.isPublished !== false,
+          tags: JSON.stringify(productData.tags || []),
+          seo_title: productData.seoTitle || productData.name,
+          seo_description: productData.seoDescription || productData.shortDescription || '',
+          created_at: productData.createdAt || new Date().toISOString(),
+        };
+        const { error: sbErr } = await sb.from('products').upsert(sbRow, { onConflict: 'id' });
+        if (sbErr) console.warn('Supabase product upsert warning:', sbErr.message);
+      }
+
+      // 2. Also try PostgreSQL if available
+      try {
+        await upsertProduct(productData);
+      } catch (sqlErr) {
+        // Ignored if Cloud SQL is not configured on this host
+      }
+
+      res.json({ success: true, product: productData });
     } catch (error: any) {
       console.error('Failed to save product:', error);
       res.status(500).json({ error: error.message || 'Failed to save product' });
@@ -126,7 +242,13 @@ async function startServer() {
   app.delete('/api/products/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      await deleteProductById(id);
+      const sb = getSb();
+      if (sb) {
+        await sb.from('products').delete().eq('id', id);
+      }
+      try {
+        await deleteProductById(id);
+      } catch {}
       res.json({ success: true, message: `Product ${id} deleted` });
     } catch (error: any) {
       console.error('Failed to delete product:', error);
@@ -141,30 +263,41 @@ async function startServer() {
       if (typeof inStock !== 'boolean') {
         return res.status(400).json({ error: 'inStock boolean required' });
       }
-      const updated = await updateProductStock(id, inStock);
-      res.json({ success: true, product: updated });
+
+      const sb = getSb();
+      if (sb) {
+        await sb.from('products').update({ in_stock: inStock }).eq('id', id);
+      }
+      try {
+        await updateProductStock(id, inStock);
+      } catch {}
+
+      res.json({ success: true, inStock });
     } catch (error: any) {
       console.error('Failed to update product stock:', error);
       res.status(500).json({ error: 'Failed to update product stock' });
     }
   });
 
-  // Categories API
+  // Categories API (Supabase Persistent Cloud Database + PostgreSQL)
   app.get('/api/categories', async (req, res) => {
     try {
-      let cats = await getAllCategories();
-      if (cats.length === 0) {
-        try {
-          for (const c of initialCategories) {
-            await upsertCategory(c);
-          }
-          cats = await getAllCategories();
-        } catch (seedErr) {
-          console.warn('Auto-seed categories warning:', seedErr);
-          return res.json(initialCategories);
+      // 1. Primary: Load from Supabase
+      const sb = getSb();
+      if (sb) {
+        const { data, error } = await sb.from('categories').select('*').order('name', { ascending: true });
+        if (!error && data && data.length > 0) {
+          return res.json(data.map(mapSupabaseCat));
         }
       }
-      res.json(cats);
+
+      // 2. Secondary: Load from PostgreSQL
+      try {
+        let cats = await getAllCategories();
+        if (cats.length > 0) return res.json(cats);
+      } catch (sqlErr) {}
+
+      res.json(initialCategories);
     } catch (error: any) {
       console.error('Failed to get categories:', error);
       res.json(initialCategories);
@@ -177,8 +310,29 @@ async function startServer() {
       if (!catData || !catData.id || !catData.name || !catData.slug) {
         return res.status(400).json({ error: 'Invalid category payload' });
       }
-      const saved = await upsertCategory(catData);
-      res.json({ success: true, category: saved });
+
+      // 1. Primary: Persist to Supabase
+      const sb = getSb();
+      if (sb) {
+        const sbRow = {
+          id: catData.id,
+          name: catData.name,
+          slug: catData.slug,
+          headline: catData.headline || '',
+          description: catData.description || '',
+          image: catData.image,
+          item_count: catData.itemCount || 0,
+        };
+        const { error: sbErr } = await sb.from('categories').upsert(sbRow, { onConflict: 'id' });
+        if (sbErr) console.warn('Supabase category upsert warning:', sbErr.message);
+      }
+
+      // 2. Also try PostgreSQL if available
+      try {
+        await upsertCategory(catData);
+      } catch (sqlErr) {}
+
+      res.json({ success: true, category: catData });
     } catch (error: any) {
       console.error('Failed to save category:', error);
       res.status(500).json({ error: error.message || 'Failed to save category' });
@@ -188,7 +342,13 @@ async function startServer() {
   app.delete('/api/categories/:id', async (req, res) => {
     try {
       const { id } = req.params;
-      await deleteCategoryById(id);
+      const sb = getSb();
+      if (sb) {
+        await sb.from('categories').delete().eq('id', id);
+      }
+      try {
+        await deleteCategoryById(id);
+      } catch {}
       res.json({ success: true, message: `Category ${id} deleted` });
     } catch (error: any) {
       console.error('Failed to delete category:', error);
@@ -286,16 +446,6 @@ async function startServer() {
       res.json({ success: false });
     }
   });
-
-  const normalizeUrl = (u: string) => {
-    if (!u) return '';
-    const trimmed = u.trim();
-    if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) return trimmed;
-    return `https://${trimmed}.supabase.co`;
-  };
-
-  const DEFAULT_SB_URL = 'https://awzkiktbcfssifdxdvxr.supabase.co';
-  const DEFAULT_SB_KEY = 'sb_publishable_yicIcn3U8j5n6eCZEI2RUA_7LF_X-19';
 
   // Supabase Management APIs
   app.get('/api/supabase/status', async (req, res) => {

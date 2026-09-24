@@ -160,6 +160,49 @@ export const mapProductToSupabase = (p: Product) => ({
   created_at: p.createdAt || new Date().toISOString(),
 });
 
+// Map Supabase product row back to application Product type
+export const mapProductFromSupabase = (r: any): Product => {
+  let gallery: string[] = [];
+  try {
+    gallery = typeof r.gallery_images === 'string' ? JSON.parse(r.gallery_images) : (r.gallery_images || []);
+  } catch {
+    gallery = [];
+  }
+  let tags: string[] = [];
+  try {
+    tags = typeof r.tags === 'string' ? JSON.parse(r.tags) : (r.tags || []);
+  } catch {
+    tags = [];
+  }
+
+  return {
+    id: String(r.id),
+    name: r.name || 'Untitled Product',
+    shortDescription: r.short_description || '',
+    fullDescription: r.full_description || '',
+    category: r.category as any,
+    subcategory: r.subcategory || '',
+    price: Number(r.price) || 0,
+    originalPrice: Number(r.original_price) || 0,
+    discount: Number(r.discount) || 0,
+    rating: Number(r.rating) || 4.8,
+    reviewCount: Number(r.review_count) || 0,
+    inStock: r.in_stock !== false,
+    image: r.image || '/apni-pehchaan-logo.jpg',
+    galleryImages: gallery,
+    platform: r.platform || 'Amazon',
+    affiliateUrl: r.affiliate_url || '#',
+    buttonText: r.button_text || 'Shop Now',
+    isFeatured: !!r.is_featured,
+    isTrending: !!r.is_trending,
+    isPublished: r.is_published !== false,
+    tags: tags,
+    seoTitle: r.seo_title || r.name,
+    seoDescription: r.seo_description || '',
+    createdAt: r.created_at || new Date().toISOString(),
+  };
+};
+
 // Transform client category to Supabase DB row format
 export const mapCategoryToSupabase = (c: Category) => ({
   id: c.id,
@@ -170,6 +213,59 @@ export const mapCategoryToSupabase = (c: Category) => ({
   image: c.image,
   item_count: c.itemCount || 0,
 });
+
+// Map Supabase category row back to application Category type
+export const mapCategoryFromSupabase = (r: any): Category => ({
+  id: String(r.id),
+  name: r.name,
+  slug: r.slug,
+  headline: r.headline || `${r.name} Heritage & Cultural Essentials`,
+  description: r.description || `Explore curated ${r.name} community products on APNI PEHCHAAN.`,
+  image: r.image || '/images/cat_gujjar_jaat_style_1790229006717.jpg',
+  itemCount: Number(r.item_count) || 0,
+});
+
+// Fetch all categories from Supabase
+export const fetchCategoriesFromSupabase = async (customUrl?: string, customKey?: string): Promise<Category[] | null> => {
+  const client = getSupabaseClient(customUrl, customKey);
+  if (!client) return null;
+  try {
+    const { data, error } = await client
+      .from('categories')
+      .select('*')
+      .order('name', { ascending: true });
+    if (error) {
+      console.warn('Failed to fetch categories from Supabase:', error.message);
+      return null;
+    }
+    if (!data || data.length === 0) return null;
+    return data.map(mapCategoryFromSupabase);
+  } catch (err) {
+    console.error('Error in fetchCategoriesFromSupabase:', err);
+    return null;
+  }
+};
+
+// Fetch all products from Supabase
+export const fetchProductsFromSupabase = async (customUrl?: string, customKey?: string): Promise<Product[] | null> => {
+  const client = getSupabaseClient(customUrl, customKey);
+  if (!client) return null;
+  try {
+    const { data, error } = await client
+      .from('products')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (error) {
+      console.warn('Failed to fetch products from Supabase:', error.message);
+      return null;
+    }
+    if (!data || data.length === 0) return null;
+    return data.map(mapProductFromSupabase);
+  } catch (err) {
+    console.error('Error in fetchProductsFromSupabase:', err);
+    return null;
+  }
+};
 
 // Sync full catalog to Supabase
 export const syncCatalogToSupabase = async (

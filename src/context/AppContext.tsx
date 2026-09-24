@@ -7,6 +7,8 @@ import {
   getSupabaseClient,
   mapProductToSupabase,
   mapCategoryToSupabase,
+  fetchProductsFromSupabase,
+  fetchCategoriesFromSupabase,
 } from '../services/supabaseService.ts';
 
 interface NavigationParams {
@@ -280,34 +282,80 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [wishlist]);
 
-  // Load from Cloud SQL PostgreSQL APIs on mount
+  // Load from Supabase Persistent Cloud Database & APIs on mount
   useEffect(() => {
-    fetch('/api/products')
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data) && data.length > 0) {
-          setProducts(data);
-        }
-      })
-      .catch((err) => console.warn('Could not load products from API:', err));
+    let isMounted = true;
 
-    fetch('/api/categories')
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data) && data.length > 0) {
-          setCategories(data);
-        }
-      })
-      .catch((err) => console.warn('Could not load categories from API:', err));
+    const loadData = async () => {
+      // 1. Direct Supabase load (fastest, client-authoritative)
+      try {
+        const [sbProds, sbCats] = await Promise.all([
+          fetchProductsFromSupabase(),
+          fetchCategoriesFromSupabase(),
+        ]);
 
-    fetch('/api/blogs')
-      .then((res) => res.json())
-      .then((data) => {
-        if (Array.isArray(data) && data.length > 0) {
-          setBlogPosts(data);
+        if (isMounted) {
+          if (sbProds && sbProds.length > 0) {
+            setProducts((prev) => {
+              const remoteIds = new Set(sbProds.map((p) => p.id));
+              const localCustom = prev.filter((p) => p.id.startsWith('prod-custom-') && !remoteIds.has(p.id));
+              return [...localCustom, ...sbProds];
+            });
+          }
+          if (sbCats && sbCats.length > 0) {
+            setCategories((prev) => {
+              const remoteIds = new Set(sbCats.map((c) => c.id));
+              const localCustom = prev.filter((c) => c.id.startsWith('cat-') && !remoteIds.has(c.id));
+              return [...sbCats, ...localCustom];
+            });
+          }
         }
-      })
-      .catch((err) => console.warn('Could not load blogs from API:', err));
+      } catch (sbErr) {
+        console.warn('Supabase direct load error:', sbErr);
+      }
+
+      // 2. Fetch from backend /api routes
+      fetch('/api/products')
+        .then((res) => res.json())
+        .then((data) => {
+          if (isMounted && Array.isArray(data) && data.length > 0) {
+            setProducts((prev) => {
+              const remoteIds = new Set(data.map((p: Product) => p.id));
+              const localCustom = prev.filter((p) => p.id.startsWith('prod-custom-') && !remoteIds.has(p.id));
+              return [...localCustom, ...data];
+            });
+          }
+        })
+        .catch((err) => console.warn('Could not load products from API:', err));
+
+      fetch('/api/categories')
+        .then((res) => res.json())
+        .then((data) => {
+          if (isMounted && Array.isArray(data) && data.length > 0) {
+            setCategories((prev) => {
+              const remoteIds = new Set(data.map((c: Category) => c.id));
+              const localCustom = prev.filter((c) => c.id.startsWith('cat-') && !remoteIds.has(c.id));
+              return [...data, ...localCustom];
+            });
+          }
+        })
+        .catch((err) => console.warn('Could not load categories from API:', err));
+
+      fetch('/api/blogs')
+        .then((res) => res.json())
+        .then((data) => {
+          if (isMounted && Array.isArray(data) && data.length > 0) {
+            setBlogPosts(data);
+          }
+        })
+        .catch((err) => console.warn('Could not load blogs from API:', err));
+    };
+
+    loadData();
+
+    return () => {
+      isMounted = false;
+    };
   }, []);
 
   // Listen to Firebase Auth state
@@ -461,25 +509,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `prod-custom-${Date.now()}`,
       createdAt: new Date().toISOString().split('T')[0],
     };
-    setProducts((prev) => [newProduct, ...prev]);
+    setProducts((prev) => [newProduct, ...prev.filter((p) => p.id !== newProduct.id)]);
     showToast(`Product "${newProduct.name}" created and synced.`);
 
-    // Persist to Cloud SQL PostgreSQL
-    fetch('/api/products', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newProduct),
-    }).catch((err) => console.error('Failed to sync product to PostgreSQL:', err));
-
-    // Persist to Supabase if configured
+    // 1. Persist directly to Supabase
     const sb = getSupabaseClient();
     if (sb) {
       sb.from('products')
         .upsert(mapProductToSupabase(newProduct), { onConflict: 'id' })
         .then(({ error }) => {
-          if (error) console.warn('Supabase product insert warning:', error);
-        });
+          if (error) console.warn('Supabase product insert warning:', error.message);
+        })
+        .catch((err) => console.error('Supabase direct insert error:', err));
     }
+
+    // 2. Persist to server API
+    fetch('/api/products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newProduct),
+    }).catch((err) => console.error('Failed to sync product to API:', err));
   };
 
   const updateProduct = (id: string, updates: Partial<Product>) => {
@@ -496,20 +545,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Product updated.');
 
     if (updatedProduct) {
-      fetch('/api/products', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedProduct),
-      }).catch((err) => console.error('Failed to update product in PostgreSQL:', err));
-
       const sb = getSupabaseClient();
       if (sb) {
         sb.from('products')
           .upsert(mapProductToSupabase(updatedProduct), { onConflict: 'id' })
           .then(({ error }) => {
-            if (error) console.warn('Supabase product update warning:', error);
-          });
+            if (error) console.warn('Supabase product update warning:', error.message);
+          })
+          .catch((err) => console.error('Supabase update product error:', err));
       }
+
+      fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedProduct),
+      }).catch((err) => console.error('Failed to update product in API:', err));
     }
   };
 
@@ -517,19 +567,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setProducts((prev) => prev.filter((item) => item.id !== id));
     showToast('Product deleted.');
 
-    fetch(`/api/products/${id}`, { method: 'DELETE' }).catch((err) =>
-      console.error('Failed to delete product from PostgreSQL:', err)
-    );
-
     const sb = getSupabaseClient();
     if (sb) {
       sb.from('products')
         .delete()
         .eq('id', id)
         .then(({ error }) => {
-          if (error) console.warn('Supabase product delete warning:', error);
-        });
+          if (error) console.warn('Supabase product delete warning:', error.message);
+        })
+        .catch((err) => console.error('Supabase delete product error:', err));
     }
+
+    fetch(`/api/products/${id}`, { method: 'DELETE' }).catch((err) =>
+      console.error('Failed to delete product from API:', err)
+    );
   };
 
   const toggleFeatured = (id: string) => {
@@ -657,23 +708,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         '/images/cat_gujjar_jaat_style_1790229006717.jpg',
     };
 
-    setCategories((prev) => [...prev, newCategory]);
+    setCategories((prev) => [...prev.filter((c) => c.id !== newCategory.id), newCategory]);
     showToast(`Category "${newCategory.name}" added.`);
 
-    fetch('/api/categories', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(newCategory),
-    }).catch((err) => console.error('Failed to sync category to PostgreSQL:', err));
-
+    // 1. Persist directly to Supabase
     const sb = getSupabaseClient();
     if (sb) {
       sb.from('categories')
         .upsert(mapCategoryToSupabase(newCategory), { onConflict: 'id' })
         .then(({ error }) => {
-          if (error) console.warn('Supabase category insert warning:', error);
-        });
+          if (error) console.warn('Supabase category insert warning:', error.message);
+        })
+        .catch((err) => console.error('Supabase category direct insert failed:', err));
     }
+
+    // 2. Persist to server API
+    fetch('/api/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newCategory),
+    }).catch((err) => console.error('Failed to sync category to API:', err));
 
     return { success: true, category: newCategory };
   };
@@ -692,20 +746,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Category updated.');
 
     if (updatedCat) {
-      fetch('/api/categories', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(updatedCat),
-      }).catch((err) => console.error('Failed to update category in PostgreSQL:', err));
-
       const sb = getSupabaseClient();
       if (sb) {
         sb.from('categories')
           .upsert(mapCategoryToSupabase(updatedCat), { onConflict: 'id' })
           .then(({ error }) => {
-            if (error) console.warn('Supabase category update warning:', error);
-          });
+            if (error) console.warn('Supabase category update warning:', error.message);
+          })
+          .catch((err) => console.error('Supabase update category failed:', err));
       }
+
+      fetch('/api/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedCat),
+      }).catch((err) => console.error('Failed to update category in API:', err));
     }
     return { success: true };
   };
@@ -727,19 +782,20 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCategories((prev) => prev.filter((c) => c.id !== id));
     showToast(`Category "${target.name}" removed.`);
 
-    fetch(`/api/categories/${id}`, { method: 'DELETE' }).catch((err) =>
-      console.error('Failed to delete category from PostgreSQL:', err)
-    );
-
     const sb = getSupabaseClient();
     if (sb) {
       sb.from('categories')
         .delete()
         .eq('id', id)
         .then(({ error }) => {
-          if (error) console.warn('Supabase category delete warning:', error);
-        });
+          if (error) console.warn('Supabase category delete warning:', error.message);
+        })
+        .catch((err) => console.error('Supabase delete category failed:', err));
     }
+
+    fetch(`/api/categories/${id}`, { method: 'DELETE' }).catch((err) =>
+      console.error('Failed to delete category from API:', err)
+    );
 
     return { success: true };
   };
