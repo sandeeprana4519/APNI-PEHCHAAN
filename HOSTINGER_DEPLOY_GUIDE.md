@@ -5,9 +5,20 @@ This guide provides step-by-step instructions to deploy the **APNI PEHCHAAN** af
 ---
 
 ## 🚀 Quick Summary / सारांश
-- **Framework**: React + Vite + Tailwind CSS (SPA)
-- **Ready for Hostinger**: Yes! The production build produces standard static files (`index.html`, `assets/`, images) with pre-configured `.htaccess` for LiteSpeed/Apache.
-- **Where to upload on Hostinger**: Inside your domain's `/public_html/` folder.
+- **Framework**: React + Vite + Tailwind CSS (SPA) with Express Server
+- **Ready for Hostinger**: Yes! Configured for both **Hostinger Node.js Web Application deployer** (with `server.js` and `npm start`) and standard static `/public_html/` upload.
+
+---
+
+## ⚡ Hostinger Node.js / Web Application Screen Settings (Screenshot Solution)
+If you see the Hostinger screen shown in your dashboard:
+- **App file**: `apni-pehchaan.zip` (Contains all project files including `package.json`, `server.js`, `src/`, etc.)
+- **Framework preset**: **`Express`** *(or `Node.js`)*
+- **Node version**: **`22.x`** *(Matches the screenshot)*
+- **Root directory**: **`./`**
+- **Build command**: `npm run build`
+- **Start command**: `npm start` *(or `node server.js`)*
+- **Port**: `3000` *(Default)*
 
 ---
 
