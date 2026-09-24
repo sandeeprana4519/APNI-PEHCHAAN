@@ -70,8 +70,10 @@ export const ProductGrid: React.FC<ProductGridProps> = ({
         return list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
       case 'featured':
       default:
-        // Prioritize featured then trending
+        // Prioritize newly added custom products, then featured then trending
         return list.sort((a, b) => {
+          if (a.id.startsWith('prod-custom') && !b.id.startsWith('prod-custom')) return -1;
+          if (!a.id.startsWith('prod-custom') && b.id.startsWith('prod-custom')) return 1;
           if (a.isFeatured && !b.isFeatured) return -1;
           if (!a.isFeatured && b.isFeatured) return 1;
           if (a.isTrending && !b.isTrending) return -1;

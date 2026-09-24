@@ -58,8 +58,15 @@ export const AffiliateModal: React.FC = () => {
             {/* Product Summary Row */}
             <div className="flex items-start gap-4 p-3 bg-slate-50 rounded-xl border border-slate-200">
               <img
-                src={current.image}
+                src={current.image || '/apni-pehchaan-logo.jpg'}
                 alt={current.name}
+                onError={(e) => {
+                  const target = e.currentTarget;
+                  if (!target.src.endsWith('/apni-pehchaan-logo.jpg')) {
+                    target.src = '/apni-pehchaan-logo.jpg';
+                    target.className = 'w-16 h-16 rounded-lg object-contain p-1 shrink-0 border border-slate-200 bg-white';
+                  }
+                }}
                 className="w-16 h-16 rounded-lg object-cover shrink-0 border border-slate-200"
               />
               <div className="min-w-0 flex-1">
@@ -128,8 +135,15 @@ export const AffiliateModal: React.FC = () => {
           <div className="overflow-y-auto p-6 space-y-6">
             <div className="relative aspect-[16/10] bg-slate-100 rounded-xl overflow-hidden border border-slate-200">
               <img
-                src={current.image}
+                src={current.image || '/apni-pehchaan-logo.jpg'}
                 alt={current.name}
+                onError={(e) => {
+                  const target = e.currentTarget;
+                  if (!target.src.endsWith('/apni-pehchaan-logo.jpg')) {
+                    target.src = '/apni-pehchaan-logo.jpg';
+                    target.className = 'w-full h-full object-contain p-6 bg-slate-50';
+                  }
+                }}
                 className="w-full h-full object-cover object-center"
               />
               <div className="absolute top-3 left-3 flex gap-2">

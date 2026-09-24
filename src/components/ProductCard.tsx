@@ -1,7 +1,7 @@
 import React from 'react';
 import { Product } from '../types';
 import { useApp } from '../context/AppContext';
-import { ExternalLink, Star, Eye, Tag } from 'lucide-react';
+import { ExternalLink, Star, Eye, Heart } from 'lucide-react';
 
 interface ProductCardProps {
   product: Product;
@@ -9,10 +9,11 @@ interface ProductCardProps {
 }
 
 export const ProductCard: React.FC<ProductCardProps> = ({ product, featuredBadge = false }) => {
-  const { triggerAffiliateRedirect, openQuickView, categories } = useApp();
+  const { triggerAffiliateRedirect, openQuickView, categories, toggleWishlist, isWishlisted } = useApp();
 
   const categoryObj = categories.find((c) => c.slug === product.category);
   const categoryName = categoryObj ? categoryObj.name : product.category;
+  const wishlisted = isWishlisted(product.id);
 
   const handleAffiliateClick = (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -21,6 +22,11 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, featuredBadge
 
   const handleCardClick = () => {
     openQuickView(product);
+  };
+
+  const handleWishlistToggle = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    toggleWishlist(product.id);
   };
 
   // Platform visual indicator helper
@@ -47,8 +53,15 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, featuredBadge
       {/* Top Image Container */}
       <div className="relative aspect-[4/3] bg-slate-100 overflow-hidden">
         <img
-          src={product.image}
+          src={product.image || '/apni-pehchaan-logo.jpg'}
           alt={product.name}
+          onError={(e) => {
+            const target = e.currentTarget;
+            if (target.src !== window.location.origin + '/apni-pehchaan-logo.jpg' && !target.src.endsWith('/apni-pehchaan-logo.jpg')) {
+              target.src = '/apni-pehchaan-logo.jpg';
+              target.className = 'w-full h-full object-contain p-4 bg-slate-50';
+            }
+          }}
           className="w-full h-full object-cover object-center group-hover:scale-105 transition-transform duration-500"
           referrerPolicy="no-referrer"
           loading="lazy"
@@ -62,7 +75,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, featuredBadge
           </span>
         </div>
 
-        {/* Quiet Top Badges */}
+        {/* Top Badges & Wishlist Button */}
         <div className="absolute top-2.5 left-2.5 right-2.5 flex items-center justify-between pointer-events-none">
           {/* Discount Badge */}
           {product.discount > 0 ? (
@@ -73,21 +86,36 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, featuredBadge
             <span></span>
           )}
 
-          {/* Platform Label */}
-          <span
-            className={`px-2 py-0.5 text-[11px] font-bold rounded border ${getPlatformStyle(
-              product.platform
-            )}`}
-          >
-            {product.platform}
-          </span>
+          <div className="flex items-center gap-1.5 pointer-events-auto">
+            {/* Wishlist Button */}
+            <button
+              onClick={handleWishlistToggle}
+              className={`p-1.5 rounded-full transition-colors backdrop-blur-md cursor-pointer ${
+                wishlisted
+                  ? 'bg-white text-rose-500 shadow-md'
+                  : 'bg-white/80 hover:bg-white text-slate-600 hover:text-rose-500 shadow-xs'
+              }`}
+              title={wishlisted ? 'Remove from wishlist' : 'Save to wishlist'}
+            >
+              <Heart className={`w-3.5 h-3.5 ${wishlisted ? 'fill-rose-500 text-rose-500' : ''}`} />
+            </button>
+
+            {/* Platform Label */}
+            <span
+              className={`px-2 py-0.5 text-[11px] font-bold rounded border backdrop-blur-md ${getPlatformStyle(
+                product.platform
+              )}`}
+            >
+              {product.platform}
+            </span>
+          </div>
         </div>
       </div>
 
       {/* Card Content */}
       <div className="p-4 sm:p-5 flex-1 flex flex-col justify-between space-y-3">
         <div className="space-y-1.5">
-          {/* Category & Subcategory line (Zero-Pill clean metadata) */}
+          {/* Category & Subcategory line */}
           <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
             <span className="text-amber-800 font-semibold">{categoryName}</span>
             <span aria-hidden="true">·</span>

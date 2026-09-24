@@ -10,8 +10,12 @@ import { Sparkles, Star, TrendingUp, ArrowRight } from 'lucide-react';
 export const HomePage: React.FC = () => {
   const { products, navigate } = useApp();
 
-  const trendingProducts = products.filter((p) => p.isTrending && p.isPublished);
-  const featuredProducts = products.filter((p) => p.isFeatured && p.isPublished);
+  const allPublished = products.filter((p) => p.isPublished);
+  // Highlight featured or newly uploaded community items
+  const featuredProducts = allPublished.filter(
+    (p) => p.isFeatured || p.id.startsWith('prod-custom')
+  );
+  const displayFeatured = featuredProducts.length > 0 ? featuredProducts : allPublished.slice(0, 4);
 
   return (
     <div className="space-y-0">
@@ -47,14 +51,14 @@ export const HomePage: React.FC = () => {
           </div>
 
           <ProductGrid
-            products={featuredProducts}
+            products={displayFeatured}
             showFilters={false}
             itemsPerPage={4}
           />
         </div>
       </section>
 
-      {/* 4. Trending Products Section (Full responsive catalog with search & platform filters) */}
+      {/* 4. Complete Curated Catalog Section (Full responsive catalog with search & platform filters) */}
       <section className="py-16 bg-[#F8F9FA] border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
           <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-700 -mb-4">
@@ -63,8 +67,8 @@ export const HomePage: React.FC = () => {
           </div>
 
           <ProductGrid
-            products={trendingProducts}
-            title="Trending Products Across Platforms"
+            products={allPublished}
+            title="Curated Products & Affiliate Offers"
             subtitle="Discover top-converting traditional jewelry, ethnic fashion, car emblems, and credit rewards."
             showFilters={true}
             itemsPerPage={8}
@@ -75,7 +79,7 @@ export const HomePage: React.FC = () => {
               onClick={() => navigate('trending')}
               className="px-6 py-3 bg-slate-900 hover:bg-slate-800 text-white text-xs sm:text-sm font-semibold rounded-lg transition-colors inline-flex items-center gap-2 cursor-pointer shadow-sm"
             >
-              <span>Explore Complete Trending Catalog ({trendingProducts.length} Deals)</span>
+              <span>Explore Complete Trending Catalog ({allPublished.length} Deals)</span>
               <ArrowRight className="w-4 h-4" />
             </button>
           </div>

@@ -1,6 +1,13 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { Product, Category, BlogPost, PageView, CategorySlug, MediaItem } from '../types';
 import { initialProducts, initialCategories, initialBlogPosts, initialMediaItems } from '../data/initialData';
+import { auth, signInWithGoogle, logOutUser } from '../lib/firebase';
+import { User, onAuthStateChanged } from 'firebase/auth';
+import {
+  getSupabaseClient,
+  mapProductToSupabase,
+  mapCategoryToSupabase,
+} from '../services/supabaseService.ts';
 
 interface NavigationParams {
   categorySlug?: CategorySlug | string;
@@ -12,6 +19,15 @@ export interface AdminCredentials {
   username: string;
   email: string;
   password: string;
+}
+
+export interface UserProfile {
+  id?: number;
+  uid: string;
+  email: string;
+  displayName?: string | null;
+  photoUrl?: string | null;
+  role?: string;
 }
 
 interface AppContextType {
@@ -47,6 +63,7 @@ interface AppContextType {
   deleteProduct: (id: string) => void;
   toggleFeatured: (id: string) => void;
   toggleTrending: (id: string) => void;
+  toggleProductStock: (id: string) => void;
 
   // Admin Blog Operations
   addBlogPost: (post: Omit<BlogPost, 'id'>) => void;
@@ -62,6 +79,19 @@ interface AppContextType {
   mediaLibrary: MediaItem[];
   addMediaItem: (item: Omit<MediaItem, 'id' | 'uploadedAt'>) => MediaItem;
   deleteMediaItem: (id: string) => void;
+
+  // User Auth & Profiles (Firebase Auth + Cloud SQL)
+  currentUser: User | null;
+  userProfile: UserProfile | null;
+  userToken: string | null;
+  isAuthLoading: boolean;
+  loginWithGoogle: () => Promise<{ success: boolean; error?: string }>;
+  logoutUser: () => Promise<void>;
+
+  // User Wishlist
+  wishlist: string[];
+  toggleWishlist: (productId: string) => Promise<void>;
+  isWishlisted: (productId: string) => boolean;
 
   // Admin Authentication
   isAdminLoggedIn: boolean;
@@ -86,6 +116,7 @@ const STORAGE_KEYS = {
   MEDIA: 'apni_pehchaan_media_v1',
   ADMIN_AUTH: 'apni_pehchaan_admin_auth_v1',
   ADMIN_CREDS: 'apni_pehchaan_admin_creds_v1',
+  WISHLIST: 'apni_pehchaan_wishlist_v1',
 };
 
 const DEFAULT_ADMIN_CREDS: AdminCredentials = {
@@ -99,7 +130,15 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [products, setProducts] = useState<Product[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
-      return saved ? JSON.parse(saved) : initialProducts;
+      if (saved) {
+        const parsed: Product[] = JSON.parse(saved);
+        return parsed.map((p) => ({
+          ...p,
+          image: p.image?.replace('/src/assets/images/', '/images/') || '/apni-pehchaan-logo.jpg',
+          galleryImages: p.galleryImages?.map((img) => img.replace('/src/assets/images/', '/images/')) || [],
+        }));
+      }
+      return initialProducts;
     } catch {
       return initialProducts;
     }
@@ -108,25 +147,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [categories, setCategories] = useState<Category[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
-      return saved ? JSON.parse(saved) : initialCategories;
+      if (saved) {
+        const parsed: Category[] = JSON.parse(saved);
+        return parsed.map((c) => ({
+          ...c,
+          image: c.image?.replace('/src/assets/images/', '/images/') || '/images/cat_gujjar_jaat_style_1790229006717.jpg',
+        }));
+      }
+      return initialCategories;
     } catch {
       return initialCategories;
     }
   });
 
-  // Sync categories to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(categories));
-    } catch (e) {
-      console.error('Failed to save categories', e);
-    }
-  }, [categories]);
-
   const [blogPosts, setBlogPosts] = useState<BlogPost[]>(() => {
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.BLOGS);
-      return saved ? JSON.parse(saved) : initialBlogPosts;
+      if (saved) {
+        const parsed: BlogPost[] = JSON.parse(saved);
+        return parsed.map((b) => ({
+          ...b,
+          coverImage: b.coverImage?.replace('/src/assets/images/', '/images/') || '/images/blog_turban_guide_1790229043202.jpg',
+        }));
+      }
+      return initialBlogPosts;
     } catch {
       return initialBlogPosts;
     }
@@ -148,14 +192,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   });
 
-  // Sync media library to localStorage
-  useEffect(() => {
+  // User Auth & Profiles (Firebase Auth + Cloud SQL PostgreSQL)
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [userToken, setUserToken] = useState<string | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState<boolean>(true);
+
+  // User Wishlist
+  const [wishlist, setWishlist] = useState<string[]>(() => {
     try {
-      localStorage.setItem(STORAGE_KEYS.MEDIA, JSON.stringify(mediaLibrary));
-    } catch (e) {
-      console.error('Failed to save media library', e);
+      const saved = localStorage.getItem(STORAGE_KEYS.WISHLIST);
+      return saved ? JSON.parse(saved) : [];
+    } catch {
+      return [];
     }
-  }, [mediaLibrary]);
+  });
 
   // Navigation state
   const [view, setView] = useState<PageView>('home');
@@ -183,16 +234,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   });
 
-  // Sync admin credentials to localStorage
-  useEffect(() => {
-    try {
-      localStorage.setItem(STORAGE_KEYS.ADMIN_CREDS, JSON.stringify(adminCredentials));
-    } catch (e) {
-      console.error('Failed to save admin credentials', e);
-    }
-  }, [adminCredentials]);
-
-  // Modals
+  // Modals & Notifications
   const [activeAffiliateProduct, setActiveAffiliateProduct] = useState<Product | null>(null);
   const [quickViewProduct, setQuickViewProduct] = useState<Product | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -208,11 +250,160 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   useEffect(() => {
     try {
+      localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(categories));
+    } catch (e) {
+      console.error('Failed to save categories', e);
+    }
+  }, [categories]);
+
+  useEffect(() => {
+    try {
       localStorage.setItem(STORAGE_KEYS.BLOGS, JSON.stringify(blogPosts));
     } catch (e) {
       console.error('Failed to save blog posts', e);
     }
   }, [blogPosts]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.MEDIA, JSON.stringify(mediaLibrary));
+    } catch (e) {
+      console.error('Failed to save media library', e);
+    }
+  }, [mediaLibrary]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(STORAGE_KEYS.WISHLIST, JSON.stringify(wishlist));
+    } catch (e) {
+      console.error('Failed to save wishlist', e);
+    }
+  }, [wishlist]);
+
+  // Load from Cloud SQL PostgreSQL APIs on mount
+  useEffect(() => {
+    fetch('/api/products')
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setProducts(data);
+        }
+      })
+      .catch((err) => console.warn('Could not load products from API:', err));
+
+    fetch('/api/categories')
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setCategories(data);
+        }
+      })
+      .catch((err) => console.warn('Could not load categories from API:', err));
+
+    fetch('/api/blogs')
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setBlogPosts(data);
+        }
+      })
+      .catch((err) => console.warn('Could not load blogs from API:', err));
+  }, []);
+
+  // Listen to Firebase Auth state
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+      setCurrentUser(user);
+      setIsAuthLoading(false);
+      if (user) {
+        try {
+          const token = await user.getIdToken();
+          setUserToken(token);
+
+          // Synchronize profile with Cloud SQL PostgreSQL database
+          const syncRes = await fetch('/api/auth/sync', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              displayName: user.displayName,
+              photoUrl: user.photoURL,
+            }),
+          });
+
+          if (syncRes.ok) {
+            const profile = await syncRes.json();
+            setUserProfile(profile);
+          }
+
+          // Fetch user wishlist from PostgreSQL
+          const wishRes = await fetch('/api/wishlist', {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (wishRes.ok) {
+            const list = await wishRes.json();
+            if (Array.isArray(list)) {
+              setWishlist(list);
+            }
+          }
+        } catch (e) {
+          console.error('Failed to sync user with PostgreSQL database:', e);
+        }
+      } else {
+        setUserToken(null);
+        setUserProfile(null);
+      }
+    });
+
+    return () => unsubscribe();
+  }, []);
+
+  const loginWithGoogle = async () => {
+    const { user, token, error } = await signInWithGoogle();
+    if (error || !user) {
+      showToast(error || 'Google sign in failed');
+      return { success: false, error };
+    }
+    showToast(`Signed in as ${user.displayName || user.email}`);
+    return { success: true };
+  };
+
+  const logoutUser = async () => {
+    await logOutUser();
+    setUserToken(null);
+    setUserProfile(null);
+    showToast('Signed out successfully.');
+  };
+
+  const isWishlisted = (productId: string) => {
+    return wishlist.includes(productId);
+  };
+
+  const toggleWishlist = async (productId: string) => {
+    // Optimistic update
+    const already = wishlist.includes(productId);
+    const updated = already ? wishlist.filter((id) => id !== productId) : [...wishlist, productId];
+    setWishlist(updated);
+    showToast(already ? 'Removed from your Saved Wishlist' : 'Saved to your Wishlist');
+
+    // If user is authenticated, sync to Cloud SQL PostgreSQL database
+    if (userToken) {
+      try {
+        await fetch('/api/wishlist/toggle', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${userToken}`,
+          },
+          body: JSON.stringify({ productId }),
+        });
+      } catch (e) {
+        console.error('Failed to sync wishlist to database', e);
+      }
+    }
+  };
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -237,6 +428,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const triggerAffiliateRedirect = (product: Product) => {
     setActiveAffiliateProduct(product);
+    // Track click event in Cloud SQL PostgreSQL
+    fetch('/api/track-click', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(userToken ? { Authorization: `Bearer ${userToken}` } : {}),
+      },
+      body: JSON.stringify({
+        productId: product.id,
+        platform: product.platform,
+      }),
+    }).catch(() => {});
   };
 
   const closeAffiliateModal = () => {
@@ -251,7 +454,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setQuickViewProduct(null);
   };
 
-  // Product Admin
+  // Product Operations
   const addProduct = (prodData: Omit<Product, 'id' | 'createdAt'>) => {
     const newProduct: Product = {
       ...prodData,
@@ -259,60 +462,169 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       createdAt: new Date().toISOString().split('T')[0],
     };
     setProducts((prev) => [newProduct, ...prev]);
-    showToast(`Product "${newProduct.name}" created successfully.`);
+    showToast(`Product "${newProduct.name}" created and synced.`);
+
+    // Persist to Cloud SQL PostgreSQL
+    fetch('/api/products', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newProduct),
+    }).catch((err) => console.error('Failed to sync product to PostgreSQL:', err));
+
+    // Persist to Supabase if configured
+    const sb = getSupabaseClient();
+    if (sb) {
+      sb.from('products')
+        .upsert(mapProductToSupabase(newProduct), { onConflict: 'id' })
+        .then(({ error }) => {
+          if (error) console.warn('Supabase product insert warning:', error);
+        });
+    }
   };
 
   const updateProduct = (id: string, updates: Partial<Product>) => {
+    let updatedProduct: Product | undefined;
     setProducts((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
+      prev.map((item) => {
+        if (item.id === id) {
+          updatedProduct = { ...item, ...updates };
+          return updatedProduct;
+        }
+        return item;
+      })
     );
-    showToast('Product updated successfully.');
+    showToast('Product updated.');
+
+    if (updatedProduct) {
+      fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedProduct),
+      }).catch((err) => console.error('Failed to update product in PostgreSQL:', err));
+
+      const sb = getSupabaseClient();
+      if (sb) {
+        sb.from('products')
+          .upsert(mapProductToSupabase(updatedProduct), { onConflict: 'id' })
+          .then(({ error }) => {
+            if (error) console.warn('Supabase product update warning:', error);
+          });
+      }
+    }
   };
 
   const deleteProduct = (id: string) => {
     setProducts((prev) => prev.filter((item) => item.id !== id));
-    showToast('Product deleted from inventory.');
+    showToast('Product deleted.');
+
+    fetch(`/api/products/${id}`, { method: 'DELETE' }).catch((err) =>
+      console.error('Failed to delete product from PostgreSQL:', err)
+    );
+
+    const sb = getSupabaseClient();
+    if (sb) {
+      sb.from('products')
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase product delete warning:', error);
+        });
+    }
   };
 
   const toggleFeatured = (id: string) => {
-    setProducts((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, isFeatured: !item.isFeatured } : item
-      )
-    );
+    const target = products.find((p) => p.id === id);
+    if (!target) return;
+    updateProduct(id, { isFeatured: !target.isFeatured });
   };
 
   const toggleTrending = (id: string) => {
-    setProducts((prev) =>
-      prev.map((item) =>
-        item.id === id ? { ...item, isTrending: !item.isTrending } : item
-      )
-    );
+    const target = products.find((p) => p.id === id);
+    if (!target) return;
+    updateProduct(id, { isTrending: !target.isTrending });
   };
 
-  // Blog Admin
+  const toggleProductStock = (id: string) => {
+    const target = products.find((p) => p.id === id);
+    if (!target) return;
+    const nextStock = !target.inStock;
+    setProducts((prev) =>
+      prev.map((item) => (item.id === id ? { ...item, inStock: nextStock } : item))
+    );
+    showToast(`"${target.name}" is now marked as ${nextStock ? 'In Stock' : 'Out of Stock'}.`);
+
+    fetch(`/api/products/${id}/stock`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ inStock: nextStock }),
+    }).catch((err) => {
+      console.warn('Direct stock patch failed, falling back to update:', err);
+      fetch('/api/products', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...target, inStock: nextStock }),
+      }).catch((postErr) => console.error('Failed to update product stock:', postErr));
+    });
+
+    const sb = getSupabaseClient();
+    if (sb) {
+      sb.from('products')
+        .update({ in_stock: nextStock })
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase stock toggle warning:', error);
+        });
+    }
+  };
+
+  // Blog Operations
   const addBlogPost = (postData: Omit<BlogPost, 'id'>) => {
     const newPost: BlogPost = {
       ...postData,
       id: `blog-${Date.now()}`,
     };
     setBlogPosts((prev) => [newPost, ...prev]);
-    showToast('Blog article published successfully.');
+    showToast('Blog article published.');
+
+    fetch('/api/blogs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newPost),
+    }).catch((err) => console.error('Failed to sync blog to PostgreSQL:', err));
   };
 
   const updateBlogPost = (id: string, updates: Partial<BlogPost>) => {
+    let updatedBlog: BlogPost | undefined;
     setBlogPosts((prev) =>
-      prev.map((item) => (item.id === id ? { ...item, ...updates } : item))
+      prev.map((item) => {
+        if (item.id === id) {
+          updatedBlog = { ...item, ...updates };
+          return updatedBlog;
+        }
+        return item;
+      })
     );
     showToast('Blog article updated.');
+
+    if (updatedBlog) {
+      fetch('/api/blogs', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedBlog),
+      }).catch((err) => console.error('Failed to update blog in PostgreSQL:', err));
+    }
   };
 
   const deleteBlogPost = (id: string) => {
     setBlogPosts((prev) => prev.filter((item) => item.id !== id));
     showToast('Blog article removed.');
+
+    fetch(`/api/blogs/${id}`, { method: 'DELETE' }).catch((err) =>
+      console.error('Failed to delete blog from PostgreSQL:', err)
+    );
   };
 
-  // Admin Category Operations
+  // Category Operations
   const addCategory = (categoryData: Omit<Category, 'id'>) => {
     const trimmedName = categoryData.name.trim();
     if (!trimmedName) {
@@ -342,24 +654,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         `Explore curated ${trimmedName} community products, traditional wear, jewelry and accessories on APNI PEHCHAAN.`,
       image:
         categoryData.image?.trim() ||
-        '/src/assets/images/cat_gujjar_jaat_style_1790229006717.jpg',
+        '/images/cat_gujjar_jaat_style_1790229006717.jpg',
     };
 
     setCategories((prev) => [...prev, newCategory]);
-    showToast(`Category "${newCategory.name}" added successfully.`);
+    showToast(`Category "${newCategory.name}" added.`);
+
+    fetch('/api/categories', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(newCategory),
+    }).catch((err) => console.error('Failed to sync category to PostgreSQL:', err));
+
+    const sb = getSupabaseClient();
+    if (sb) {
+      sb.from('categories')
+        .upsert(mapCategoryToSupabase(newCategory), { onConflict: 'id' })
+        .then(({ error }) => {
+          if (error) console.warn('Supabase category insert warning:', error);
+        });
+    }
+
     return { success: true, category: newCategory };
   };
 
   const updateCategory = (id: string, updates: Partial<Category>) => {
+    let updatedCat: Category | undefined;
     setCategories((prev) =>
       prev.map((c) => {
         if (c.id === id) {
-          return { ...c, ...updates };
+          updatedCat = { ...c, ...updates };
+          return updatedCat;
         }
         return c;
       })
     );
-    showToast('Category updated successfully.');
+    showToast('Category updated.');
+
+    if (updatedCat) {
+      fetch('/api/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedCat),
+      }).catch((err) => console.error('Failed to update category in PostgreSQL:', err));
+
+      const sb = getSupabaseClient();
+      if (sb) {
+        sb.from('categories')
+          .upsert(mapCategoryToSupabase(updatedCat), { onConflict: 'id' })
+          .then(({ error }) => {
+            if (error) console.warn('Supabase category update warning:', error);
+          });
+      }
+    }
     return { success: true };
   };
 
@@ -372,7 +719,6 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: 'Cannot delete the only remaining category in the catalog.' };
     }
 
-    // Reassign products of deleted category to another category or 'other'
     const fallbackCategory = categories.find((c) => c.id !== id)?.slug || 'other';
     setProducts((prev) =>
       prev.map((p) => (p.category === target.slug ? { ...p, category: fallbackCategory } : p))
@@ -380,6 +726,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     setCategories((prev) => prev.filter((c) => c.id !== id));
     showToast(`Category "${target.name}" removed.`);
+
+    fetch(`/api/categories/${id}`, { method: 'DELETE' }).catch((err) =>
+      console.error('Failed to delete category from PostgreSQL:', err)
+    );
+
+    const sb = getSupabaseClient();
+    if (sb) {
+      sb.from('categories')
+        .delete()
+        .eq('id', id)
+        .then(({ error }) => {
+          if (error) console.warn('Supabase category delete warning:', error);
+        });
+    }
+
     return { success: true };
   };
 
@@ -412,14 +773,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (!isIdMatch) {
       return {
         success: false,
-        error: 'Unknown username or email address. Check again or contact administrator.',
+        error: 'Unknown username or email address.',
       };
     }
 
     if (pass !== adminCredentials.password) {
       return {
         success: false,
-        error: `The password you entered for the username "${idOrEmail}" is incorrect. Lost your password?`,
+        error: `The password you entered for "${idOrEmail}" is incorrect.`,
       };
     }
 
@@ -433,7 +794,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {
       console.error('Storage access issue', e);
     }
-    showToast(`Welcome back, ${adminCredentials.username}! Logged into WordPress Admin.`);
+    showToast(`Welcome back, ${adminCredentials.username}!`);
     return { success: true };
   };
 
@@ -445,7 +806,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {
       console.error('Storage access issue', e);
     }
-    showToast('You have been securely logged out from WordPress Admin.');
+    showToast('Logged out from Admin Dashboard.');
   };
 
   const updateAdminCredentials = (username: string, email: string, pass: string) => {
@@ -466,7 +827,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {
       console.error('Failed to update credentials', e);
     }
-    showToast('Admin Login ID and Password updated successfully.');
+    showToast('Admin credentials updated.');
     return { success: true };
   };
 
@@ -477,7 +838,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {
       console.error('Failed to reset credentials', e);
     }
-    showToast('Admin credentials reset to default (admin / admin@123).');
+    showToast('Admin credentials reset to default.');
   };
 
   const resetToDefault = () => {
@@ -489,7 +850,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setCategories(initialCategories);
     setBlogPosts(initialBlogPosts);
     setMediaLibrary(initialMediaItems);
-    showToast('Restored default products, categories, media & articles catalogue.');
+    showToast('Restored default catalog.');
   };
 
   return (
@@ -519,12 +880,22 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         deleteProduct,
         toggleFeatured,
         toggleTrending,
+        toggleProductStock,
         addBlogPost,
         updateBlogPost,
         deleteBlogPost,
         addCategory,
         updateCategory,
         deleteCategory,
+        currentUser,
+        userProfile,
+        userToken,
+        isAuthLoading,
+        loginWithGoogle,
+        logoutUser,
+        wishlist,
+        toggleWishlist,
+        isWishlisted,
         isAdminLoggedIn,
         adminCredentials,
         loginAdmin,

@@ -40,14 +40,26 @@ import {
   Upload,
   Copy,
   Download,
+  Database,
+  Server,
+  RefreshCw,
+  Code,
+  Terminal,
 } from 'lucide-react';
+import {
+  checkSupabaseConnection,
+  syncCatalogToSupabase,
+  getStoredSupabaseConfig,
+  normalizeSupabaseUrl,
+  type SupabaseHealth,
+} from '../services/supabaseService.ts';
 
 const PRESET_CATEGORY_IMAGES = [
-  { label: 'Kada & Accessories', url: '/src/assets/images/cat_gujjar_jaat_style_1790229006717.jpg' },
-  { label: 'Rajputana Heritage', url: '/src/assets/images/cat_rajput_heritage_1790229019313.jpg' },
-  { label: 'Ethnic Kurta & Silk', url: '/src/assets/images/cat_yadav_brahmin_1790229031674.jpg' },
-  { label: 'Turban & Safa Pride', url: '/src/assets/images/blog_turban_guide_1790229043202.jpg' },
-  { label: 'Brand Identity Crest', url: '/src/assets/images/hero_apni_pehchaan_1790228991906.jpg' },
+  { label: 'Kada & Accessories', url: '/images/cat_gujjar_jaat_style_1790229006717.jpg' },
+  { label: 'Rajputana Heritage', url: '/images/cat_rajput_heritage_1790229019313.jpg' },
+  { label: 'Ethnic Kurta & Silk', url: '/images/cat_yadav_brahmin_1790229031674.jpg' },
+  { label: 'Turban & Safa Pride', url: '/images/blog_turban_guide_1790229043202.jpg' },
+  { label: 'Brand Identity Crest', url: '/images/hero_apni_pehchaan_1790228991906.jpg' },
 ];
 
 export const AdminDashboard: React.FC = () => {
@@ -63,6 +75,7 @@ export const AdminDashboard: React.FC = () => {
     deleteProduct,
     toggleFeatured,
     toggleTrending,
+    toggleProductStock,
     addBlogPost,
     updateBlogPost,
     deleteBlogPost,
@@ -82,6 +95,7 @@ export const AdminDashboard: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'products' | 'categories' | 'media' | 'blogs' | 'data'>('products');
   const [adminSearch, setAdminSearch] = useState('');
   const [filterCategory, setFilterCategory] = useState<string>('All');
+  const [stockFilter, setStockFilter] = useState<'All' | 'inStock' | 'outOfStock'>('All');
 
   // Media library tab state
   const [mediaSearch, setMediaSearch] = useState('');
@@ -89,6 +103,15 @@ export const AdminDashboard: React.FC = () => {
   const [previewMediaUrl, setPreviewMediaUrl] = useState<string | null>(null);
   const [isMediaUploading, setIsMediaUploading] = useState(false);
   const mediaTabFileInputRef = useRef<HTMLInputElement>(null);
+
+  // In-app Delete Confirmation Modal State
+  const [deleteConfirmation, setDeleteConfirmation] = useState<{
+    type: 'product' | 'category' | 'blog' | 'reset';
+    id?: string;
+    title: string;
+    message: string;
+    onConfirm: () => void;
+  } | null>(null);
 
   const handleMediaTabUpload = async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -109,7 +132,7 @@ export const AdminDashboard: React.FC = () => {
       }
       showToast(`${count} image(s) uploaded directly from gallery to Media Library!`);
     } catch (err: any) {
-      alert(err?.message || 'Failed to upload from gallery.');
+      showToast(err?.message || 'Failed to upload from gallery.');
     } finally {
       setIsMediaUploading(false);
       if (mediaTabFileInputRef.current) {
@@ -117,6 +140,16 @@ export const AdminDashboard: React.FC = () => {
       }
     }
   };
+
+  // Supabase Integration state
+  const initialSupabaseConfig = getStoredSupabaseConfig();
+  const [supabaseUrl, setSupabaseUrl] = useState(initialSupabaseConfig.url);
+  const [supabaseKey, setSupabaseKey] = useState(initialSupabaseConfig.key);
+  const [supabaseHealth, setSupabaseHealth] = useState<SupabaseHealth | null>(null);
+  const [isCheckingSupabase, setIsCheckingSupabase] = useState(false);
+  const [isSyncingSupabase, setIsSyncingSupabase] = useState(false);
+  const [showSqlSchema, setShowSqlSchema] = useState(false);
+  const [copiedSql, setCopiedSql] = useState(false);
 
   // Category management state
   const [isCategoryModalOpen, setIsCategoryModalOpen] = useState(false);
@@ -128,7 +161,7 @@ export const AdminDashboard: React.FC = () => {
     slug: '',
     headline: '',
     description: '',
-    image: '/src/assets/images/cat_gujjar_jaat_style_1790229006717.jpg',
+    image: '/images/cat_gujjar_jaat_style_1790229006717.jpg',
   });
   const [categoryError, setCategoryError] = useState<string | null>(null);
 
@@ -157,8 +190,8 @@ export const AdminDashboard: React.FC = () => {
     platform: 'Amazon',
     affiliateUrl: '',
     buttonText: 'Shop Now',
-    isFeatured: false,
-    isTrending: false,
+    isFeatured: true,
+    isTrending: true,
     tags: [],
     seoTitle: '',
     seoDescription: '',
@@ -204,8 +237,8 @@ export const AdminDashboard: React.FC = () => {
       platform: 'Amazon',
       affiliateUrl: 'https://www.amazon.in/dp/sample-deal?tag=apnipehchaan-21',
       buttonText: 'Shop Now',
-      isFeatured: false,
-      isTrending: false,
+      isFeatured: true,
+      isTrending: true,
       tags: ['Traditional', 'Authentic'],
       seoTitle: '',
       seoDescription: '',
@@ -437,18 +470,29 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const handleDeleteCategory = (cat: Category) => {
-    const productCount = products.filter((p) => p.category === cat.slug).length;
-    const confirmText =
-      productCount > 0
-        ? `Category "${cat.name}" currently has ${productCount} product(s) assigned. Deleting this category will reassign those items to another category. Proceed?`
-        : `Are you sure you want to permanently delete category "${cat.name}"?`;
-
-    if (window.confirm(confirmText)) {
-      const res = deleteCategory(cat.id);
-      if (!res.success) {
-        alert(res.error || 'Failed to delete category.');
-      }
+    if (categories.length <= 1) {
+      showToast('Cannot delete the only remaining category in the catalog.');
+      return;
     }
+    const productCount = products.filter((p) => p.category === cat.slug).length;
+    const confirmMessage =
+      productCount > 0
+        ? `Category "${cat.name}" has ${productCount} item(s) assigned. Deleting this category will reassign those items to another category and permanently delete "${cat.name}" from PostgreSQL.`
+        : `Are you sure you want to permanently delete category "${cat.name}" from PostgreSQL?`;
+
+    setDeleteConfirmation({
+      type: 'category',
+      id: cat.id,
+      title: `Delete Category: ${cat.name}`,
+      message: confirmMessage,
+      onConfirm: () => {
+        const res = deleteCategory(cat.id);
+        if (!res.success) {
+          showToast(res.error || 'Failed to delete category.');
+        }
+        setDeleteConfirmation(null);
+      },
+    });
   };
 
   const displayedCategories = categories.filter((c) => {
@@ -465,16 +509,27 @@ export const AdminDashboard: React.FC = () => {
   // Filter products for table
   const displayedProducts = products.filter((p) => {
     if (filterCategory !== 'All' && p.category !== filterCategory) return false;
+    if (stockFilter === 'inStock' && p.inStock === false) return false;
+    if (stockFilter === 'outOfStock' && p.inStock !== false) return false;
     if (adminSearch.trim()) {
       const q = adminSearch.toLowerCase();
       return (
         p.name.toLowerCase().includes(q) ||
         p.affiliateUrl.toLowerCase().includes(q) ||
-        p.platform.toLowerCase().includes(q)
+        p.platform.toLowerCase().includes(q) ||
+        p.category.toLowerCase().includes(q) ||
+        p.subcategory.toLowerCase().includes(q) ||
+        p.tags.some((t) => t.toLowerCase().includes(q))
       );
     }
     return true;
   });
+
+  const totalCatalogCount = products.length;
+  const inStockItemsCount = products.filter((p) => p.inStock !== false).length;
+  const outOfStockItemsCount = products.filter((p) => p.inStock === false).length;
+  const inStockPercentage =
+    totalCatalogCount > 0 ? Math.round((inStockItemsCount / totalCatalogCount) * 100) : 0;
 
   // Handle Admin Credentials Update
   const handleUpdateCreds = (e: React.FormEvent) => {
@@ -498,6 +553,142 @@ export const AdminDashboard: React.FC = () => {
       setConfirmPassword('');
       setTimeout(() => setCredSuccess(null), 4000);
     }
+  };
+
+  // Handle Supabase Save Credentials & Test Connection
+  const handleSaveSupabaseConfig = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const formattedUrl = normalizeSupabaseUrl(supabaseUrl.trim());
+    setSupabaseUrl(formattedUrl);
+    localStorage.setItem('apni_supabase_url', formattedUrl);
+    localStorage.setItem('apni_supabase_key', supabaseKey.trim());
+    setIsCheckingSupabase(true);
+    try {
+      const res = await checkSupabaseConnection(formattedUrl, supabaseKey.trim());
+      setSupabaseHealth(res);
+      if (res.connected) {
+        showToast('Supabase connection verified successfully!');
+      } else {
+        showToast(res.error || 'Connected to project, please verify table schemas.');
+      }
+    } catch (err: any) {
+      setSupabaseHealth({
+        configured: true,
+        connected: false,
+        error: err?.message || 'Failed to connect to Supabase',
+      });
+    } finally {
+      setIsCheckingSupabase(false);
+    }
+  };
+
+  const handleTestSupabase = async () => {
+    const formattedUrl = normalizeSupabaseUrl(supabaseUrl.trim());
+    setSupabaseUrl(formattedUrl);
+    setIsCheckingSupabase(true);
+    try {
+      const res = await checkSupabaseConnection(formattedUrl, supabaseKey.trim());
+      setSupabaseHealth(res);
+      if (res.connected) {
+        showToast(`Connected! Products: ${res.productCount}, Categories: ${res.categoryCount}`);
+      } else {
+        showToast(res.error || 'Connection failed.');
+      }
+    } catch (err: any) {
+      setSupabaseHealth({
+        configured: true,
+        connected: false,
+        error: err?.message || 'Failed to connect to Supabase',
+      });
+    } finally {
+      setIsCheckingSupabase(false);
+    }
+  };
+
+  // Check initial Supabase health once on mount
+  React.useEffect(() => {
+    checkSupabaseConnection().then((res) => {
+      setSupabaseHealth(res);
+    });
+  }, []);
+
+  const handleSyncToSupabase = async () => {
+    if (!supabaseUrl.trim() || !supabaseKey.trim()) {
+      showToast('Please provide your Supabase URL and API Key first.');
+      return;
+    }
+    setIsSyncingSupabase(true);
+    try {
+      const res = await syncCatalogToSupabase(products, categories, supabaseUrl.trim(), supabaseKey.trim());
+      if (res.success) {
+        showToast(res.message);
+        handleTestSupabase();
+      } else {
+        showToast(res.error || res.message);
+      }
+    } catch (err: any) {
+      showToast(err?.message || 'Sync failed.');
+    } finally {
+      setIsSyncingSupabase(false);
+    }
+  };
+
+  const SUPABASE_SCHEMA_SQL = `-- Supabase Table Schema for APNI PEHCHAAN
+-- Run this in your Supabase SQL Editor:
+
+CREATE TABLE IF NOT EXISTS public.categories (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    headline TEXT,
+    description TEXT,
+    image TEXT NOT NULL,
+    item_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now()) NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+CREATE TABLE IF NOT EXISTS public.products (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    short_description TEXT,
+    full_description TEXT,
+    category TEXT NOT NULL,
+    subcategory TEXT,
+    price INTEGER NOT NULL DEFAULT 0,
+    original_price INTEGER NOT NULL DEFAULT 0,
+    discount INTEGER NOT NULL DEFAULT 0,
+    rating NUMERIC DEFAULT 4.8,
+    review_count INTEGER DEFAULT 0,
+    in_stock BOOLEAN DEFAULT true,
+    image TEXT NOT NULL,
+    gallery_images TEXT,
+    platform TEXT NOT NULL,
+    affiliate_url TEXT NOT NULL,
+    button_text TEXT NOT NULL DEFAULT 'Shop Now',
+    is_featured BOOLEAN DEFAULT false,
+    is_trending BOOLEAN DEFAULT false,
+    is_published BOOLEAN DEFAULT true,
+    tags TEXT,
+    seo_title TEXT,
+    seo_description TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT timezone('utc'::text, now())
+);
+
+ALTER TABLE public.categories ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.products ENABLE ROW LEVEL SECURITY;
+
+CREATE POLICY "Public read categories" ON public.categories FOR SELECT USING (true);
+CREATE POLICY "Public read products" ON public.products FOR SELECT USING (true);
+CREATE POLICY "Admin full access categories" ON public.categories FOR ALL USING (true) WITH CHECK (true);
+CREATE POLICY "Admin full access products" ON public.products FOR ALL USING (true) WITH CHECK (true);`;
+
+  const handleCopySql = () => {
+    navigator.clipboard.writeText(SUPABASE_SCHEMA_SQL);
+    setCopiedSql(true);
+    showToast('Supabase SQL schema copied to clipboard!');
+    setTimeout(() => setCopiedSql(false), 3000);
   };
 
   // If not logged in, render authentic WordPress Login screen
@@ -705,6 +896,49 @@ export const AdminDashboard: React.FC = () => {
           {/* Tab 1: Products Management */}
           {activeTab === 'products' && (
             <div className="space-y-4">
+              {/* Inventory KPI Status Strip */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between">
+                  <div>
+                    <div className="text-[11px] font-medium text-slate-500">Database Catalog</div>
+                    <div className="text-xl font-bold text-slate-900 mt-0.5">{totalCatalogCount} Items</div>
+                  </div>
+                  <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-slate-700">
+                    <Package className="w-4 h-4" />
+                  </div>
+                </div>
+
+                <div className="bg-white p-3.5 rounded-xl border border-emerald-200 shadow-2xs flex items-center justify-between">
+                  <div>
+                    <div className="text-[11px] font-medium text-emerald-700">In Stock (Active)</div>
+                    <div className="text-xl font-bold text-emerald-700 mt-0.5">{inStockItemsCount} Items</div>
+                  </div>
+                  <div className="w-8 h-8 rounded-lg bg-emerald-50 flex items-center justify-center text-emerald-600">
+                    <CheckCircle className="w-4 h-4" />
+                  </div>
+                </div>
+
+                <div className="bg-white p-3.5 rounded-xl border border-rose-200 shadow-2xs flex items-center justify-between">
+                  <div>
+                    <div className="text-[11px] font-medium text-rose-700">Out of Stock</div>
+                    <div className="text-xl font-bold text-rose-700 mt-0.5">{outOfStockItemsCount} Items</div>
+                  </div>
+                  <div className="w-8 h-8 rounded-lg bg-rose-50 flex items-center justify-center text-rose-600">
+                    <AlertCircle className="w-4 h-4" />
+                  </div>
+                </div>
+
+                <div className="bg-white p-3.5 rounded-xl border border-slate-200 shadow-2xs flex items-center justify-between">
+                  <div>
+                    <div className="text-[11px] font-medium text-slate-500">Availability Health</div>
+                    <div className="text-xl font-bold text-amber-700 mt-0.5">{inStockPercentage}% Ready</div>
+                  </div>
+                  <div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center text-amber-600">
+                    <Sparkles className="w-4 h-4" />
+                  </div>
+                </div>
+              </div>
+
               {/* Header Action Bar */}
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-xs flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
                 <div className="flex flex-wrap items-center gap-3">
@@ -738,6 +972,17 @@ export const AdminDashboard: React.FC = () => {
                       </option>
                     ))}
                   </select>
+
+                  {/* Filter by Stock / Inventory */}
+                  <select
+                    value={stockFilter}
+                    onChange={(e) => setStockFilter(e.target.value as any)}
+                    className="text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 font-medium text-slate-800 cursor-pointer"
+                  >
+                    <option value="All">All Stock Status</option>
+                    <option value="inStock">In Stock Only ({inStockItemsCount})</option>
+                    <option value="outOfStock">Out of Stock Only ({outOfStockItemsCount})</option>
+                  </select>
                 </div>
 
                 {/* Admin Search */}
@@ -746,7 +991,7 @@ export const AdminDashboard: React.FC = () => {
                     type="text"
                     value={adminSearch}
                     onChange={(e) => setAdminSearch(e.target.value)}
-                    placeholder="Search by title or link..."
+                    placeholder="Search by title, tag, link..."
                     className="w-full pl-9 pr-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-800"
                   />
                   <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -763,6 +1008,7 @@ export const AdminDashboard: React.FC = () => {
                         <th className="py-3 px-4">Category</th>
                         <th className="py-3 px-4">Platform</th>
                         <th className="py-3 px-4">Price</th>
+                        <th className="py-3 px-4 text-center">Inventory Stock</th>
                         <th className="py-3 px-4">Affiliate URL</th>
                         <th className="py-3 px-4 text-center">Featured</th>
                         <th className="py-3 px-4 text-center">Trending</th>
@@ -799,6 +1045,30 @@ export const AdminDashboard: React.FC = () => {
                           </td>
                           <td className="py-3 px-4 font-bold text-slate-900 tabular-nums">
                             {p.price === 0 ? 'Free' : `₹${p.price.toLocaleString('en-IN')}`}
+                          </td>
+                          <td className="py-3 px-4 text-center">
+                            <button
+                              type="button"
+                              onClick={() => toggleProductStock(p.id)}
+                              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-semibold transition cursor-pointer border ${
+                                p.inStock !== false
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                  : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+                              }`}
+                              title={`Click to mark as ${p.inStock !== false ? 'Out of Stock' : 'In Stock'}`}
+                            >
+                              {p.inStock !== false ? (
+                                <>
+                                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0"></span>
+                                  <span>In Stock</span>
+                                </>
+                              ) : (
+                                <>
+                                  <span className="w-1.5 h-1.5 rounded-full bg-rose-500 shrink-0"></span>
+                                  <span>Out of Stock</span>
+                                </>
+                              )}
+                            </button>
                           </td>
                           <td className="py-3 px-4 max-w-xs truncate font-mono text-[11px] text-amber-700">
                             <a
@@ -849,12 +1119,19 @@ export const AdminDashboard: React.FC = () => {
                               </button>
                               <button
                                 onClick={() => {
-                                  if (confirm(`Delete "${p.name}"?`)) {
-                                    deleteProduct(p.id);
-                                  }
+                                  setDeleteConfirmation({
+                                    type: 'product',
+                                    id: p.id,
+                                    title: `Delete Product: ${p.name}`,
+                                    message: `Are you sure you want to permanently delete "${p.name}"? This action will remove the item from the live inventory catalog and the PostgreSQL database.`,
+                                    onConfirm: () => {
+                                      deleteProduct(p.id);
+                                      setDeleteConfirmation(null);
+                                    },
+                                  });
                                 }}
-                                className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded cursor-pointer"
-                                title="Delete"
+                                className="p-1.5 bg-rose-50 hover:bg-rose-100 text-rose-600 rounded cursor-pointer transition"
+                                title="Delete Product"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
                               </button>
@@ -1639,7 +1916,226 @@ export const AdminDashboard: React.FC = () => {
                 </form>
               </div>
 
-              {/* Card 2: Catalogue & LocalStorage Settings */}
+              {/* Card 2: Supabase & Relational Database Integration */}
+              <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-6 shadow-xs">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-100 pb-4">
+                  <div className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center font-bold">
+                      <Database className="w-5 h-5" />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-base text-slate-900 flex items-center gap-2">
+                        <span>Supabase Relational Database</span>
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-semibold uppercase tracking-wider">
+                          PostgreSQL
+                        </span>
+                      </h3>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Manage 'products' and 'categories' tables, sync live inventory, and run custom DDL scripts.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCopySql}
+                      className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      {copiedSql ? <Check className="w-3.5 h-3.5 text-emerald-600" /> : <Copy className="w-3.5 h-3.5" />}
+                      <span>{copiedSql ? 'Copied SQL!' : 'Copy SQL Schema'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setShowSqlSchema(!showSqlSchema)}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      <Code className="w-3.5 h-3.5" />
+                      <span>{showSqlSchema ? 'Hide SQL' : 'View SQL DDL'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Connection Status Banner */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                    <div className="text-[11px] font-medium text-slate-500 flex items-center justify-between">
+                      <span>Server Cloud SQL Database</span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    </div>
+                    <div className="text-base font-bold text-slate-900 mt-1">Connected (Active)</div>
+                    <div className="text-[11px] text-slate-500 mt-0.5">
+                      {totalCatalogCount} products & {categories.length} categories
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                    <div className="text-[11px] font-medium text-slate-500 flex items-center justify-between">
+                      <span>Supabase Project Status</span>
+                      <span
+                        className={`w-2 h-2 rounded-full ${
+                          supabaseHealth?.connected
+                            ? 'bg-emerald-500'
+                            : supabaseUrl
+                            ? 'bg-amber-500'
+                            : 'bg-slate-400'
+                        }`}
+                      ></span>
+                    </div>
+                    <div className="text-base font-bold text-slate-900 mt-1">
+                      {supabaseHealth?.connected
+                        ? 'Connected'
+                        : isCheckingSupabase
+                        ? 'Checking...'
+                        : supabaseUrl
+                        ? 'Configured'
+                        : 'Standby / Local'}
+                    </div>
+                    <div className="text-[11px] text-slate-500 mt-0.5 truncate max-w-xs">
+                      {supabaseHealth?.connected
+                        ? `${supabaseHealth.productCount || 0} prods / ${supabaseHealth.categoryCount || 0} cats`
+                        : supabaseUrl
+                        ? supabaseUrl
+                        : 'Enter URL & Key below'}
+                    </div>
+                  </div>
+
+                  <div className="bg-slate-50 p-4 rounded-xl border border-slate-200 flex flex-col justify-between">
+                    <div>
+                      <div className="text-[11px] font-medium text-slate-500">Live Inventory Ready</div>
+                      <div className="text-base font-bold text-emerald-700 mt-1">
+                        {inStockItemsCount} In Stock / {outOfStockItemsCount} Out
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isSyncingSupabase}
+                      onClick={handleSyncToSupabase}
+                      className="mt-2 w-full py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-semibold rounded-lg flex items-center justify-center gap-1.5 transition cursor-pointer shadow-xs"
+                    >
+                      <RefreshCw className={`w-3.5 h-3.5 ${isSyncingSupabase ? 'animate-spin' : ''}`} />
+                      <span>{isSyncingSupabase ? 'Syncing Tables...' : 'Sync Catalog to Supabase'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Supabase Credentials Form */}
+                <form onSubmit={handleSaveSupabaseConfig} className="space-y-4 pt-2">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Supabase Project URL
+                      </label>
+                      <input
+                        type="url"
+                        value={supabaseUrl}
+                        onChange={(e) => setSupabaseUrl(e.target.value)}
+                        placeholder="https://xyzproject.supabase.co"
+                        className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white focus:border-amber-500 outline-none font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Supabase Anon / Service Role Key
+                      </label>
+                      <input
+                        type="password"
+                        value={supabaseKey}
+                        onChange={(e) => setSupabaseKey(e.target.value)}
+                        placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                        className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white focus:border-amber-500 outline-none font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+                    <span className="text-[11px] text-slate-500">
+                      Credentials are saved safely in your browser and used by admin CRUD actions to persist changes to Supabase.
+                    </span>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={handleTestSupabase}
+                        disabled={isCheckingSupabase}
+                        className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition cursor-pointer"
+                      >
+                        {isCheckingSupabase ? 'Testing...' : 'Test Connection'}
+                      </button>
+
+                      <button
+                        type="submit"
+                        className="px-5 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-lg transition cursor-pointer shadow-xs flex items-center gap-1.5"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>Save & Verify</span>
+                      </button>
+                    </div>
+                  </div>
+                </form>
+
+                {/* Collapsible Supabase SQL Schema Viewer */}
+                {showSqlSchema && (
+                  <div className="mt-4 p-4 bg-slate-900 rounded-xl text-slate-200 space-y-3 animate-in fade-in duration-150">
+                    <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                      <div className="flex items-center gap-2">
+                        <Terminal className="w-4 h-4 text-amber-400" />
+                        <span className="text-xs font-mono font-semibold text-amber-300">
+                          supabase_schema.sql (Products, Categories, RLS, Indexes)
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCopySql}
+                        className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-xs text-white rounded flex items-center gap-1 cursor-pointer transition"
+                      >
+                        <Copy className="w-3 h-3" />
+                        <span>{copiedSql ? 'Copied!' : 'Copy Code'}</span>
+                      </button>
+                    </div>
+                    <pre className="text-[11px] font-mono leading-relaxed overflow-x-auto max-h-64 p-2 bg-slate-950 rounded-lg text-emerald-400 selection:bg-amber-600 selection:text-white">
+                      {SUPABASE_SCHEMA_SQL}
+                    </pre>
+                  </div>
+                )}
+
+                {/* Table Schema Architecture Summary */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2">
+                  <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Table: categories</span>
+                      </span>
+                      <span className="text-[10px] bg-slate-200 px-2 py-0.5 rounded text-slate-700 font-mono">
+                        7 Columns
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed font-mono">
+                      id (PK), name, slug (UNIQUE), headline, description, image, item_count, created_at, updated_at
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl border border-slate-200 bg-slate-50/50">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
+                        <Package className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Table: products</span>
+                      </span>
+                      <span className="text-[10px] bg-slate-200 px-2 py-0.5 rounded text-slate-700 font-mono">
+                        22 Columns
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-relaxed font-mono">
+                      id (PK), name, category, in_stock (BOOL), price, affiliate_url, platform, is_featured, is_trending...
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 3: Catalogue & LocalStorage Settings */}
               <div className="bg-white rounded-xl border border-slate-200 p-6 space-y-6 shadow-xs">
                 <div>
                   <h3 className="font-bold text-base text-slate-900">
@@ -1668,11 +2164,17 @@ export const AdminDashboard: React.FC = () => {
                   </div>
                   <button
                     onClick={() => {
-                      if (confirm('Are you sure you want to reset all products and articles to default presets?')) {
-                        resetToDefault();
-                      }
+                      setDeleteConfirmation({
+                        type: 'reset',
+                        title: 'Reset Catalogue & Demo Data',
+                        message: 'Are you sure you want to restore default product, category, and blog post collections? Any newly created custom items will be reset.',
+                        onConfirm: () => {
+                          resetToDefault();
+                          setDeleteConfirmation(null);
+                        },
+                      });
                     }}
-                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer"
+                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold rounded-lg flex items-center gap-1.5 cursor-pointer transition shadow-xs"
                   >
                     <RotateCcw className="w-3.5 h-3.5" />
                     <span>Reset Catalogue</span>
@@ -1904,6 +2406,46 @@ export const AdminDashboard: React.FC = () => {
                   placeholder="e.g. Gujjar, Brass Kada, Traditional, Lion Motifs"
                   className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900"
                 />
+              </div>
+
+              {/* Inventory Stock Status */}
+              <div className="bg-slate-50 p-3.5 rounded-xl border border-slate-200">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <span className="block text-xs font-bold text-slate-800">
+                      Inventory Stock Status *
+                    </span>
+                    <span className="text-[11px] text-slate-500">
+                      Control whether this product is actively available for buyers or marked out of stock.
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setProductForm({ ...productForm, inStock: true })}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                        productForm.inStock
+                          ? 'bg-emerald-600 text-white shadow-xs'
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <CheckCircle className="w-3.5 h-3.5" />
+                      <span>In Stock</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProductForm({ ...productForm, inStock: false })}
+                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer ${
+                        !productForm.inStock
+                          ? 'bg-rose-600 text-white shadow-xs'
+                          : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                      }`}
+                    >
+                      <AlertCircle className="w-3.5 h-3.5" />
+                      <span>Out of Stock</span>
+                    </button>
+                  </div>
+                </div>
               </div>
 
               {/* Flags: Featured, Trending, Published */}
@@ -2298,6 +2840,47 @@ export const AdminDashboard: React.FC = () => {
                 alt="Preview"
                 className="max-h-[70vh] max-w-full object-contain rounded-lg shadow-lg"
               />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Database & Inventory Deletion Confirmation Modal */}
+      {deleteConfirmation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/70 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl border border-slate-200 animate-in fade-in zoom-in duration-150">
+            <div className="flex items-center gap-3 text-rose-600">
+              <div className="w-10 h-10 rounded-full bg-rose-50 flex items-center justify-center shrink-0">
+                <AlertCircle className="w-6 h-6 text-rose-600" />
+              </div>
+              <div>
+                <h3 className="font-bold text-slate-900 text-sm leading-tight">
+                  {deleteConfirmation.title}
+                </h3>
+                <span className="text-[11px] font-mono text-slate-400">Database Action</span>
+              </div>
+            </div>
+
+            <p className="text-xs text-slate-600 leading-relaxed bg-slate-50 p-3 rounded-xl border border-slate-100">
+              {deleteConfirmation.message}
+            </p>
+
+            <div className="pt-2 flex items-center justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => setDeleteConfirmation(null)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 rounded-lg cursor-pointer transition"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={deleteConfirmation.onConfirm}
+                className="px-4 py-2 bg-rose-600 hover:bg-rose-700 active:bg-rose-800 text-white text-xs font-bold rounded-lg cursor-pointer transition shadow-xs flex items-center gap-1.5"
+              >
+                <Trash2 className="w-3.5 h-3.5" />
+                <span>Confirm Action</span>
+              </button>
             </div>
           </div>
         </div>

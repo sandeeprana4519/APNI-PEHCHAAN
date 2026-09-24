@@ -6,7 +6,9 @@ import { Flame, Home, ChevronRight, Sparkles } from 'lucide-react';
 export const TrendingPage: React.FC = () => {
   const { products, navigate } = useApp();
 
-  const trendingProducts = products.filter((p) => p.isTrending && p.isPublished);
+  const trendingProducts = products.filter(
+    (p) => (p.isTrending || p.id.startsWith('prod-custom')) && p.isPublished
+  );
 
   return (
     <div className="min-h-screen bg-[#F8F9FA] pb-20">
