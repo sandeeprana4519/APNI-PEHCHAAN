@@ -1,0 +1,6 @@
+{
+  "name": "APNI PEHCHAAN",
+  "description": "Discover products matching your style and cultural identity with curated affiliate collections from Amazon, Flipkart, Meesho, and bank partners.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
