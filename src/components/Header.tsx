@@ -1,14 +1,10 @@
 import React, { useState } from 'react';
 import { useApp } from '../context/AppContext';
 import {
-  Search,
   Menu,
   X,
   SlidersHorizontal,
   ChevronDown,
-  User as UserIcon,
-  LogOut,
-  LogIn,
   Heart,
 } from 'lucide-react';
 import { CategorySlug } from '../types';
@@ -17,28 +13,19 @@ export const Header: React.FC = () => {
   const {
     view,
     navigate,
-    searchQuery,
-    setSearchQuery,
     categories,
     isAdminLoggedIn,
     adminCredentials,
-    currentUser,
-    userProfile,
-    loginWithGoogle,
-    logoutUser,
     wishlist,
   } = useApp();
 
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
   const [categoryDropdown, setCategoryDropdown] = useState(false);
-  const [userDropdown, setUserDropdown] = useState(false);
 
   const handleNav = (targetView: Parameters<typeof navigate>[0], params?: Parameters<typeof navigate>[1]) => {
     navigate(targetView, params);
     setMobileMenuOpen(false);
     setCategoryDropdown(false);
-    setUserDropdown(false);
   };
 
   return (
@@ -182,29 +169,8 @@ export const Header: React.FC = () => {
           </button>
         </nav>
 
-        {/* Zone 3: Search, Auth & Admin */}
+        {/* Zone 3: Wishlist & Admin */}
         <div className="flex items-center gap-3">
-          {/* Quick Search Bar (Desktop) */}
-          <div className="relative hidden md:block w-44 lg:w-56">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search Kada, Safa, Kurta..."
-              className="w-full pl-9 pr-4 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-amber-500 focus:bg-white text-slate-800 placeholder-slate-400 transition-all"
-            />
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-          </div>
-
-          {/* Search Toggle (Mobile) */}
-          <button
-            onClick={() => setSearchOpen(!searchOpen)}
-            className="md:hidden p-2 text-slate-700 hover:text-slate-900 cursor-pointer"
-            aria-label="Toggle search"
-          >
-            <Search className="w-5 h-5" />
-          </button>
-
           {/* Wishlist Indicator Button */}
           {wishlist.length > 0 && (
             <button
@@ -216,67 +182,6 @@ export const Header: React.FC = () => {
               <span className="absolute -top-1 -right-1 bg-rose-600 text-white text-[10px] font-bold rounded-full w-4 h-4 flex items-center justify-center">
                 {wishlist.length}
               </span>
-            </button>
-          )}
-
-          {/* User Auth (Google Sign-In / Account Menu) */}
-          {currentUser ? (
-            <div className="relative">
-              <button
-                onClick={() => setUserDropdown(!userDropdown)}
-                className="flex items-center gap-2 p-1.5 rounded-lg border border-slate-200 hover:border-amber-400 transition-colors bg-white cursor-pointer"
-                title={currentUser.email || 'My Account'}
-              >
-                {currentUser.photoURL ? (
-                  <img
-                    src={currentUser.photoURL}
-                    alt={currentUser.displayName || 'User'}
-                    className="w-7 h-7 rounded-full object-cover"
-                  />
-                ) : (
-                  <div className="w-7 h-7 rounded-full bg-amber-600 text-white flex items-center justify-center text-xs font-bold">
-                    {(currentUser.displayName || currentUser.email || 'U')[0].toUpperCase()}
-                  </div>
-                )}
-                <span className="hidden xl:inline text-xs font-semibold text-slate-700 max-w-[100px] truncate">
-                  {currentUser.displayName?.split(' ')[0] || 'Account'}
-                </span>
-                <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
-              </button>
-
-              {userDropdown && (
-                <div
-                  onMouseLeave={() => setUserDropdown(false)}
-                  className="absolute right-0 top-full mt-2 w-56 bg-white rounded-lg shadow-xl border border-slate-100 py-2 z-50 animate-in fade-in-50"
-                >
-                  <div className="px-4 py-2 border-b border-slate-100">
-                    <p className="text-xs font-bold text-slate-800 truncate">{currentUser.displayName || 'User'}</p>
-                    <p className="text-[11px] text-slate-500 truncate">{currentUser.email}</p>
-                  </div>
-                  <div className="px-4 py-2 text-[11px] text-slate-500">
-                    <span>Cloud SQL Synced Profile</span>
-                  </div>
-                  <button
-                    onClick={() => {
-                      logoutUser();
-                      setUserDropdown(false);
-                    }}
-                    className="w-full text-left px-4 py-2 text-xs font-medium text-rose-600 hover:bg-rose-50 flex items-center gap-2 cursor-pointer"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    <span>Sign Out</span>
-                  </button>
-                </div>
-              )}
-            </div>
-          ) : (
-            <button
-              onClick={() => loginWithGoogle()}
-              className="flex items-center gap-1.5 px-3 py-2 text-xs font-semibold rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 transition-colors cursor-pointer"
-              title="Sign in with Google to sync wishlist"
-            >
-              <LogIn className="w-3.5 h-3.5 text-amber-700" />
-              <span className="hidden sm:inline">Sign In</span>
             </button>
           )}
 
@@ -314,23 +219,6 @@ export const Header: React.FC = () => {
         </div>
       </div>
 
-      {/* Expandable Search Input (Mobile) */}
-      {searchOpen && (
-        <div className="md:hidden px-4 pb-3 pt-1 border-t border-slate-100 bg-white">
-          <div className="relative">
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search products, categories, tags..."
-              className="w-full pl-9 pr-4 py-2 text-sm bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:border-amber-500 text-slate-800"
-              autoFocus
-            />
-            <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-          </div>
-        </div>
-      )}
-
       {/* Mobile Drawer Menu */}
       {mobileMenuOpen && (
         <div className="lg:hidden bg-white border-t border-slate-200 px-6 py-6 space-y-4 shadow-lg animate-in slide-in-from-top-2">
@@ -352,41 +240,6 @@ export const Header: React.FC = () => {
                 Your Style · Your Identity
               </span>
             </div>
-          </div>
-
-          {/* User Sign In Status on Mobile */}
-          <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-            {currentUser ? (
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {currentUser.photoURL ? (
-                    <img src={currentUser.photoURL} alt="" className="w-8 h-8 rounded-full" />
-                  ) : (
-                    <div className="w-8 h-8 rounded-full bg-amber-600 text-white flex items-center justify-center text-xs font-bold">
-                      {(currentUser.displayName || currentUser.email || 'U')[0].toUpperCase()}
-                    </div>
-                  )}
-                  <div className="text-left">
-                    <p className="text-xs font-bold text-slate-900 leading-tight">{currentUser.displayName || 'User'}</p>
-                    <p className="text-[10px] text-slate-500 leading-tight truncate max-w-[150px]">{currentUser.email}</p>
-                  </div>
-                </div>
-                <button
-                  onClick={() => logoutUser()}
-                  className="text-xs text-rose-600 font-semibold px-2 py-1 bg-white rounded border border-rose-200 cursor-pointer"
-                >
-                  Sign Out
-                </button>
-              </div>
-            ) : (
-              <button
-                onClick={() => loginWithGoogle()}
-                className="w-full flex items-center justify-center gap-2 py-2 px-3 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold cursor-pointer transition-colors"
-              >
-                <LogIn className="w-4 h-4" />
-                <span>Sign in with Google</span>
-              </button>
-            )}
           </div>
 
           <div className="flex flex-col space-y-3 font-medium text-slate-800">
