@@ -48,20 +48,12 @@ export const Header: React.FC = () => {
 
       {/* Main 3-Zone Top Bar */}
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-20 flex items-center justify-between gap-4">
-        {/* Zone 1: Logo and Brand identity */}
+        {/* Zone 1: Brand identity */}
         <div className="flex items-center gap-3">
           <button
             onClick={() => handleNav('home')}
-            className="flex items-center gap-3 text-left group cursor-pointer focus:outline-none"
+            className="flex items-center gap-2.5 text-left group cursor-pointer focus:outline-none py-1"
           >
-            <div className="relative w-11 h-11 sm:w-13 sm:h-13 rounded-xl overflow-hidden border border-amber-200/90 bg-white shadow-xs group-hover:border-amber-400 group-hover:shadow-md transition-all shrink-0">
-              <img
-                src="/apni-pehchaan-logo.jpg"
-                alt="APNI PEHCHAAN Logo"
-                className="w-full h-full object-contain p-0.5 group-hover:scale-105 transition-transform duration-300"
-                referrerPolicy="no-referrer"
-              />
-            </div>
             <div className="flex flex-col">
               <span className="font-display text-xl sm:text-2xl font-black tracking-wider text-slate-950 group-hover:text-amber-600 transition-colors leading-tight">
                 APNI PEHCHAAN

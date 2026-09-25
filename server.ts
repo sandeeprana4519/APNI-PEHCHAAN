@@ -157,6 +157,9 @@ async function startServer() {
     itemCount: Number(r.item_count) || 0,
   });
 
+  const serverDeletedProductIds = new Set<string>();
+  const serverDeletedCategoryIds = new Set<string>();
+
   // Products API (Supabase Persistent Cloud Database + PostgreSQL)
   app.get('/api/products', async (req, res) => {
     try {
@@ -164,24 +167,29 @@ async function startServer() {
       const sb = getSb();
       if (sb) {
         const { data, error } = await sb.from('products').select('*').order('created_at', { ascending: false });
-        if (!error && data && data.length > 0) {
-          return res.json(data.map(mapSupabaseProd));
+        if (!error && data) {
+          const prods = data
+            .map(mapSupabaseProd)
+            .filter((p: any) => !serverDeletedProductIds.has(p.id));
+          return res.json(prods);
         }
       }
 
       // 2. Secondary: Load from Cloud SQL PostgreSQL
       try {
         let prods = await getAllProducts();
-        if (prods.length > 0) return res.json(prods);
+        if (prods.length > 0) {
+          return res.json(prods.filter((p: any) => !serverDeletedProductIds.has(p.id)));
+        }
       } catch (sqlErr) {
         // PostgreSQL unavailable
       }
 
       // 3. Fallback
-      res.json(initialProducts);
+      res.json(initialProducts.filter((p) => !serverDeletedProductIds.has(p.id)));
     } catch (error: any) {
       console.error('Failed to get products:', error);
-      res.json(initialProducts);
+      res.json(initialProducts.filter((p) => !serverDeletedProductIds.has(p.id)));
     }
   });
 
@@ -191,6 +199,8 @@ async function startServer() {
       if (!productData || !productData.id || !productData.name) {
         return res.status(400).json({ error: 'Invalid product payload' });
       }
+
+      serverDeletedProductIds.delete(productData.id);
 
       // 1. Primary: Persist to Supabase
       const sb = getSb();
@@ -242,6 +252,8 @@ async function startServer() {
   app.delete('/api/products/:id', async (req, res) => {
     try {
       const { id } = req.params;
+      serverDeletedProductIds.add(id);
+
       const sb = getSb();
       if (sb) {
         await sb.from('products').delete().eq('id', id);
@@ -286,21 +298,26 @@ async function startServer() {
       const sb = getSb();
       if (sb) {
         const { data, error } = await sb.from('categories').select('*').order('name', { ascending: true });
-        if (!error && data && data.length > 0) {
-          return res.json(data.map(mapSupabaseCat));
+        if (!error && data) {
+          const cats = data
+            .map(mapSupabaseCat)
+            .filter((c: any) => !serverDeletedCategoryIds.has(c.id));
+          return res.json(cats);
         }
       }
 
       // 2. Secondary: Load from PostgreSQL
       try {
         let cats = await getAllCategories();
-        if (cats.length > 0) return res.json(cats);
+        if (cats.length > 0) {
+          return res.json(cats.filter((c: any) => !serverDeletedCategoryIds.has(c.id)));
+        }
       } catch (sqlErr) {}
 
-      res.json(initialCategories);
+      res.json(initialCategories.filter((c) => !serverDeletedCategoryIds.has(c.id)));
     } catch (error: any) {
       console.error('Failed to get categories:', error);
-      res.json(initialCategories);
+      res.json(initialCategories.filter((c) => !serverDeletedCategoryIds.has(c.id)));
     }
   });
 
@@ -310,6 +327,8 @@ async function startServer() {
       if (!catData || !catData.id || !catData.name || !catData.slug) {
         return res.status(400).json({ error: 'Invalid category payload' });
       }
+
+      serverDeletedCategoryIds.delete(catData.id);
 
       // 1. Primary: Persist to Supabase
       const sb = getSb();
@@ -342,6 +361,8 @@ async function startServer() {
   app.delete('/api/categories/:id', async (req, res) => {
     try {
       const { id } = req.params;
+      serverDeletedCategoryIds.add(id);
+
       const sb = getSb();
       if (sb) {
         await sb.from('categories').delete().eq('id', id);

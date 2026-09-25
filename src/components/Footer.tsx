@@ -17,14 +17,6 @@ export const Footer: React.FC = () => {
           {/* Brand Info (2 cols) */}
           <div className="lg:col-span-2 space-y-4">
             <div className="flex items-center gap-3.5">
-              <div className="w-14 h-14 rounded-2xl bg-white p-1 border border-amber-400/40 shadow-lg overflow-hidden shrink-0">
-                <img
-                  src="/apni-pehchaan-logo.jpg"
-                  alt="APNI PEHCHAAN Official Logo"
-                  className="w-full h-full object-contain"
-                  referrerPolicy="no-referrer"
-                />
-              </div>
               <div>
                 <span className="font-display text-2xl font-black tracking-wider text-white block">
                   APNI PEHCHAAN

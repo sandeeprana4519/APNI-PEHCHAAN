@@ -61,75 +61,287 @@ export interface SupabaseHealth {
   configured: boolean;
   connected: boolean;
   url?: string;
+  latencyMs?: number;
+  latencyRating?: 'fast' | 'moderate' | 'slow';
+  authStatus?: 'authenticated' | 'auth_error' | 'not_configured' | 'network_error';
+  authMessage?: string;
   productCount?: number;
   categoryCount?: number;
   inStockCount?: number;
+  writeTestPassed?: boolean;
+  writeTestLatencyMs?: number;
   error?: string;
 }
 
-export const checkSupabaseConnection = async (customUrl?: string, customKey?: string): Promise<SupabaseHealth> => {
-  const client = getSupabaseClient(customUrl, customKey);
-  const config = customUrl && customKey ? { url: customUrl, key: customKey } : getStoredSupabaseConfig();
+export interface SupabaseDiagnosticResult {
+  configured: boolean;
+  connected: boolean;
+  url: string;
+  latencyMs: number;
+  latencyRating: 'fast' | 'moderate' | 'slow';
+  authStatus: 'authenticated' | 'auth_error' | 'not_configured' | 'network_error';
+  authMessage: string;
+  categoryCount: number;
+  productCount: number;
+  inStockCount: number;
+  categoriesTableOk: boolean;
+  productsTableOk: boolean;
+  writeTestPassed: boolean;
+  writeTestLatencyMs: number;
+  writeTestMessage: string;
+  persistenceVerified: boolean;
+  issuesSummary: string[];
+  testedAt: string;
+  error?: string;
+}
 
-  if (!client || !config.url) {
+const isSupabaseAuthError = (err: any): boolean => {
+  if (!err) return false;
+  const msg = (err.message || '').toLowerCase();
+  const code = String(err.code || '');
+  return (
+    code === '401' ||
+    code === '403' ||
+    code === 'PGRST301' ||
+    msg.includes('jwt') ||
+    msg.includes('apikey') ||
+    msg.includes('unauthorized') ||
+    msg.includes('invalid api key') ||
+    msg.includes('claim') ||
+    msg.includes('permission denied') ||
+    msg.includes('row-level security') ||
+    msg.includes('rls')
+  );
+};
+
+export const runSupabaseDiagnostics = async (
+  customUrl?: string,
+  customKey?: string
+): Promise<SupabaseDiagnosticResult> => {
+  const config = customUrl && customKey
+    ? { url: normalizeSupabaseUrl(customUrl), key: customKey }
+    : getStoredSupabaseConfig();
+  const client = getSupabaseClient(config.url, config.key);
+  const now = new Date().toLocaleTimeString();
+
+  if (!client || !config.url || !config.key) {
     return {
       configured: false,
       connected: false,
-      error: 'Supabase URL or Key not set. Enter your Supabase credentials or configure environment variables.',
+      url: config.url || 'Not configured',
+      latencyMs: 0,
+      latencyRating: 'slow',
+      authStatus: 'not_configured',
+      authMessage: 'Supabase Project URL or API Key is missing. Please configure credentials in the settings panel.',
+      categoryCount: 0,
+      productCount: 0,
+      inStockCount: 0,
+      categoriesTableOk: false,
+      productsTableOk: false,
+      writeTestPassed: false,
+      writeTestLatencyMs: 0,
+      writeTestMessage: 'Skipped - credentials not configured',
+      persistenceVerified: false,
+      issuesSummary: ['Missing Supabase URL or Anon Key in environment / settings'],
+      testedAt: now,
+      error: 'Supabase URL or Key not set.',
     };
   }
 
+  const issues: string[] = [];
+  const startPing = performance.now();
+
   try {
-    // Check categories table
+    // 1. Measure Category read latency & test Auth
+    const t0 = performance.now();
     const { count: catCount, error: catError } = await client
       .from('categories')
       .select('*', { count: 'exact', head: true });
+    const catLatency = Math.round(performance.now() - t0);
 
-    if (catError) {
+    if (catError && isSupabaseAuthError(catError)) {
       return {
         configured: true,
         connected: false,
         url: config.url,
-        error: `Supabase Table 'categories' error: ${catError.message}. Make sure you ran the SQL schema in your Supabase SQL Editor.`,
+        latencyMs: catLatency,
+        latencyRating: catLatency < 250 ? 'fast' : catLatency < 750 ? 'moderate' : 'slow',
+        authStatus: 'auth_error',
+        authMessage: `Authentication Failed: ${catError.message} (Verify Supabase anon/publishable key & RLS policies)`,
+        categoryCount: 0,
+        productCount: 0,
+        inStockCount: 0,
+        categoriesTableOk: false,
+        productsTableOk: false,
+        writeTestPassed: false,
+        writeTestLatencyMs: 0,
+        writeTestMessage: 'Aborted due to authentication error',
+        persistenceVerified: false,
+        issuesSummary: ['Authentication Error: 401/403 Unauthorized on Supabase categories table'],
+        testedAt: now,
+        error: catError.message,
       };
     }
 
-    // Check products table
+    const categoriesTableOk = !catError;
+    if (catError) {
+      issues.push(`Categories table issue: ${catError.message}`);
+    }
+
+    // 2. Measure Products read latency & check schema
+    const t1 = performance.now();
     const { count: prodCount, error: prodError } = await client
       .from('products')
       .select('*', { count: 'exact', head: true });
+    const prodLatency = Math.round(performance.now() - t1);
 
-    if (prodError) {
+    if (prodError && isSupabaseAuthError(prodError)) {
       return {
         configured: true,
         connected: false,
         url: config.url,
-        error: `Supabase Table 'products' error: ${prodError.message}`,
+        latencyMs: prodLatency,
+        latencyRating: prodLatency < 250 ? 'fast' : prodLatency < 750 ? 'moderate' : 'slow',
+        authStatus: 'auth_error',
+        authMessage: `Authentication Failed on products table: ${prodError.message}`,
+        categoryCount: catCount || 0,
+        productCount: 0,
+        inStockCount: 0,
+        categoriesTableOk,
+        productsTableOk: false,
+        writeTestPassed: false,
+        writeTestLatencyMs: 0,
+        writeTestMessage: 'Aborted due to authentication error on products table',
+        persistenceVerified: false,
+        issuesSummary: ['Authentication Error: Unauthorized on Supabase products table'],
+        testedAt: now,
+        error: prodError.message,
       };
     }
 
-    // Check in-stock count
+    const productsTableOk = !prodError;
+    if (prodError) {
+      issues.push(`Products table issue: ${prodError.message}`);
+    }
+
+    // 3. In-stock count
     const { count: inStockCount } = await client
       .from('products')
       .select('*', { count: 'exact', head: true })
       .eq('in_stock', true);
 
+    // 4. Persistence Probe Test (Insert & Delete transient probe)
+    let writeTestPassed = false;
+    let writeTestLatencyMs = 0;
+    let writeTestMessage = 'Write & delete persistence verified';
+    const probeId = `probe_diag_${Date.now()}`;
+
+    try {
+      const probeT0 = performance.now();
+      const { error: insErr } = await client
+        .from('categories')
+        .insert({
+          id: probeId,
+          name: 'DIAG_PROBE',
+          slug: `diag-probe-${Date.now()}`,
+          headline: 'Transient connection probe',
+          image: '/images/cat_gujjar_jaat_style_1790229006717.jpg',
+          item_count: 0,
+        });
+
+      writeTestLatencyMs = Math.round(performance.now() - probeT0);
+
+      if (insErr) {
+        if (isSupabaseAuthError(insErr)) {
+          writeTestMessage = `Write rejected by Auth / RLS: ${insErr.message}`;
+          issues.push('Data Persistence Issue: RLS Policy prevents client writes. Grant INSERT/UPDATE/DELETE permissions to anon role.');
+        } else {
+          writeTestMessage = `Write test failed: ${insErr.message}`;
+          issues.push(`Write probe error: ${insErr.message}`);
+        }
+      } else {
+        writeTestPassed = true;
+        // Clean up probe immediately
+        await client.from('categories').delete().eq('id', probeId);
+      }
+    } catch (wErr: any) {
+      writeTestMessage = `Write probe exception: ${wErr?.message || String(wErr)}`;
+      issues.push(writeTestMessage);
+    }
+
+    const totalLatency = Math.round(performance.now() - startPing);
+    const latencyRating: 'fast' | 'moderate' | 'slow' =
+      totalLatency < 250 ? 'fast' : totalLatency < 800 ? 'moderate' : 'slow';
+
+    if (latencyRating === 'slow') {
+      issues.push(`High API Latency (${totalLatency}ms) - Network roundtrips may cause slight UI lag before updates settle.`);
+    }
+
     return {
       configured: true,
-      connected: true,
+      connected: categoriesTableOk && productsTableOk,
       url: config.url,
+      latencyMs: totalLatency,
+      latencyRating,
+      authStatus: 'authenticated',
+      authMessage: 'API Key & Token authenticated successfully (Read & Write permissions active)',
       categoryCount: catCount || 0,
       productCount: prodCount || 0,
       inStockCount: inStockCount || 0,
+      categoriesTableOk,
+      productsTableOk,
+      writeTestPassed,
+      writeTestLatencyMs,
+      writeTestMessage,
+      persistenceVerified: categoriesTableOk && productsTableOk && writeTestPassed,
+      issuesSummary: issues,
+      testedAt: now,
+      error: issues.length > 0 ? issues.join(' · ') : undefined,
     };
   } catch (err: any) {
+    const totalLatency = Math.round(performance.now() - startPing);
+    const isNetwork = err?.message?.includes('fetch') || err?.message?.includes('Network');
     return {
       configured: true,
       connected: false,
       url: config.url,
-      error: err?.message || 'Network error connecting to Supabase instance',
+      latencyMs: totalLatency,
+      latencyRating: 'slow',
+      authStatus: isNetwork ? 'network_error' : 'auth_error',
+      authMessage: `Connection failed: ${err?.message || 'Network unreachable'}`,
+      categoryCount: 0,
+      productCount: 0,
+      inStockCount: 0,
+      categoriesTableOk: false,
+      productsTableOk: false,
+      writeTestPassed: false,
+      writeTestLatencyMs: 0,
+      writeTestMessage: 'Aborted due to connection error',
+      persistenceVerified: false,
+      issuesSummary: [err?.message || 'Network latency or connection dropped'],
+      testedAt: now,
+      error: err?.message,
     };
   }
+};
+
+export const checkSupabaseConnection = async (customUrl?: string, customKey?: string): Promise<SupabaseHealth> => {
+  const diag = await runSupabaseDiagnostics(customUrl, customKey);
+  return {
+    configured: diag.configured,
+    connected: diag.connected,
+    url: diag.url,
+    latencyMs: diag.latencyMs,
+    latencyRating: diag.latencyRating,
+    authStatus: diag.authStatus,
+    authMessage: diag.authMessage,
+    categoryCount: diag.categoryCount,
+    productCount: diag.productCount,
+    inStockCount: diag.inStockCount,
+    writeTestPassed: diag.writeTestPassed,
+    writeTestLatencyMs: diag.writeTestLatencyMs,
+    error: diag.error,
+  };
 };
 
 // Transform client product to Supabase DB row format
@@ -238,7 +450,7 @@ export const fetchCategoriesFromSupabase = async (customUrl?: string, customKey?
       console.warn('Failed to fetch categories from Supabase:', error.message);
       return null;
     }
-    if (!data || data.length === 0) return null;
+    if (!data) return null;
     return data.map(mapCategoryFromSupabase);
   } catch (err) {
     console.error('Error in fetchCategoriesFromSupabase:', err);
@@ -259,11 +471,37 @@ export const fetchProductsFromSupabase = async (customUrl?: string, customKey?: 
       console.warn('Failed to fetch products from Supabase:', error.message);
       return null;
     }
-    if (!data || data.length === 0) return null;
+    if (!data) return null;
     return data.map(mapProductFromSupabase);
   } catch (err) {
     console.error('Error in fetchProductsFromSupabase:', err);
     return null;
+  }
+};
+
+// Direct delete category from Supabase
+export const deleteCategoryFromSupabase = async (id: string, customUrl?: string, customKey?: string) => {
+  const client = getSupabaseClient(customUrl, customKey);
+  if (!client) return { success: false, error: 'No client' };
+  try {
+    const { error } = await client.from('categories').delete().eq('id', id);
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message };
+  }
+};
+
+// Direct delete product from Supabase
+export const deleteProductFromSupabase = async (id: string, customUrl?: string, customKey?: string) => {
+  const client = getSupabaseClient(customUrl, customKey);
+  if (!client) return { success: false, error: 'No client' };
+  try {
+    const { error } = await client.from('products').delete().eq('id', id);
+    if (error) return { success: false, error: error.message };
+    return { success: true };
+  } catch (err: any) {
+    return { success: false, error: err?.message };
   }
 };
 

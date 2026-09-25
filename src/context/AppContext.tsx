@@ -9,6 +9,8 @@ import {
   mapCategoryToSupabase,
   fetchProductsFromSupabase,
   fetchCategoriesFromSupabase,
+  deleteProductFromSupabase,
+  deleteCategoryFromSupabase,
 } from '../services/supabaseService.ts';
 
 interface NavigationParams {
@@ -48,6 +50,7 @@ interface AppContextType {
   products: Product[];
   categories: Category[];
   blogPosts: BlogPost[];
+  refreshCatalog: () => Promise<void>;
 
   // Affiliate Redirect Handling
   activeAffiliateProduct: Product | null;
@@ -119,6 +122,69 @@ const STORAGE_KEYS = {
   ADMIN_AUTH: 'apni_pehchaan_admin_auth_v1',
   ADMIN_CREDS: 'apni_pehchaan_admin_creds_v1',
   WISHLIST: 'apni_pehchaan_wishlist_v1',
+  DELETED_PRODUCTS: 'apni_pehchaan_deleted_products_v1',
+  DELETED_CATEGORIES: 'apni_pehchaan_deleted_categories_v1',
+};
+
+// Tombstone helpers to prevent deleted records from reappearing
+const getDeletedCategoryIds = (): Set<string> => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.DELETED_CATEGORIES);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+};
+
+const getDeletedProductIds = (): Set<string> => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEYS.DELETED_PRODUCTS);
+    return new Set(raw ? JSON.parse(raw) : []);
+  } catch {
+    return new Set();
+  }
+};
+
+const recordDeletedCategory = (id: string) => {
+  const current = getDeletedCategoryIds();
+  current.add(id);
+  try {
+    localStorage.setItem(STORAGE_KEYS.DELETED_CATEGORIES, JSON.stringify([...current]));
+  } catch {}
+};
+
+const recordDeletedProduct = (id: string) => {
+  const current = getDeletedProductIds();
+  current.add(id);
+  try {
+    localStorage.setItem(STORAGE_KEYS.DELETED_PRODUCTS, JSON.stringify([...current]));
+  } catch {}
+};
+
+const unmarkDeletedCategory = (id: string) => {
+  const current = getDeletedCategoryIds();
+  current.delete(id);
+  try {
+    localStorage.setItem(STORAGE_KEYS.DELETED_CATEGORIES, JSON.stringify([...current]));
+  } catch {}
+};
+
+const unmarkDeletedProduct = (id: string) => {
+  const current = getDeletedProductIds();
+  current.delete(id);
+  try {
+    localStorage.setItem(STORAGE_KEYS.DELETED_PRODUCTS, JSON.stringify([...current]));
+  } catch {}
+};
+
+const broadcastCatalogChange = () => {
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel('apni_catalog_channel');
+      bc.postMessage('sync_catalog');
+      bc.close();
+    }
+  } catch {}
 };
 
 const DEFAULT_ADMIN_CREDS: AdminCredentials = {
@@ -128,37 +194,43 @@ const DEFAULT_ADMIN_CREDS: AdminCredentials = {
 };
 
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  // Initial states with localStorage check
+  // Initial states with tombstone checks to ensure deleted items never appear
   const [products, setProducts] = useState<Product[]>(() => {
+    const deleted = getDeletedProductIds();
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
       if (saved) {
         const parsed: Product[] = JSON.parse(saved);
-        return parsed.map((p) => ({
-          ...p,
-          image: p.image?.replace('/src/assets/images/', '/images/') || '/apni-pehchaan-logo.jpg',
-          galleryImages: p.galleryImages?.map((img) => img.replace('/src/assets/images/', '/images/')) || [],
-        }));
+        return parsed
+          .filter((p) => !deleted.has(p.id))
+          .map((p) => ({
+            ...p,
+            image: p.image?.replace('/src/assets/images/', '/images/') || '/apni-pehchaan-logo.jpg',
+            galleryImages: p.galleryImages?.map((img) => img.replace('/src/assets/images/', '/images/')) || [],
+          }));
       }
-      return initialProducts;
+      return initialProducts.filter((p) => !deleted.has(p.id));
     } catch {
-      return initialProducts;
+      return initialProducts.filter((p) => !deleted.has(p.id));
     }
   });
 
   const [categories, setCategories] = useState<Category[]>(() => {
+    const deleted = getDeletedCategoryIds();
     try {
       const saved = localStorage.getItem(STORAGE_KEYS.CATEGORIES);
       if (saved) {
         const parsed: Category[] = JSON.parse(saved);
-        return parsed.map((c) => ({
-          ...c,
-          image: c.image?.replace('/src/assets/images/', '/images/') || '/images/cat_gujjar_jaat_style_1790229006717.jpg',
-        }));
+        return parsed
+          .filter((c) => !deleted.has(c.id))
+          .map((c) => ({
+            ...c,
+            image: c.image?.replace('/src/assets/images/', '/images/') || '/images/cat_gujjar_jaat_style_1790229006717.jpg',
+          }));
       }
-      return initialCategories;
+      return initialCategories.filter((c) => !deleted.has(c.id));
     } catch {
-      return initialCategories;
+      return initialCategories.filter((c) => !deleted.has(c.id));
     }
   });
 
@@ -282,79 +354,149 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   }, [wishlist]);
 
-  // Load from Supabase Persistent Cloud Database & APIs on mount
-  useEffect(() => {
-    let isMounted = true;
+  // Synchronize live catalog with live Supabase database and server API
+  const refreshCatalog = async () => {
+    const deletedCats = getDeletedCategoryIds();
+    const deletedProds = getDeletedProductIds();
 
-    const loadData = async () => {
-      // 1. Direct Supabase load (fastest, client-authoritative)
-      try {
-        const [sbProds, sbCats] = await Promise.all([
-          fetchProductsFromSupabase(),
-          fetchCategoriesFromSupabase(),
-        ]);
+    try {
+      const [sbProds, sbCats] = await Promise.all([
+        fetchProductsFromSupabase(),
+        fetchCategoriesFromSupabase(),
+      ]);
 
-        if (isMounted) {
-          if (sbProds && sbProds.length > 0) {
-            setProducts((prev) => {
-              const remoteIds = new Set(sbProds.map((p) => p.id));
-              const localCustom = prev.filter((p) => p.id.startsWith('prod-custom-') && !remoteIds.has(p.id));
-              return [...localCustom, ...sbProds];
-            });
-          }
-          if (sbCats && sbCats.length > 0) {
-            setCategories((prev) => {
-              const remoteIds = new Set(sbCats.map((c) => c.id));
-              const localCustom = prev.filter((c) => c.id.startsWith('cat-') && !remoteIds.has(c.id));
-              return [...sbCats, ...localCustom];
-            });
-          }
-        }
-      } catch (sbErr) {
-        console.warn('Supabase direct load error:', sbErr);
+      if (sbCats !== null) {
+        // Authoritative live categories from Supabase! Filter out any tombstoned IDs
+        const liveCats = sbCats.filter((c) => !deletedCats.has(c.id));
+        setCategories(liveCats);
+        try {
+          localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(liveCats));
+        } catch {}
+      } else {
+        // Fallback: Fetch categories from API
+        fetch('/api/categories')
+          .then((res) => res.json())
+          .then((data) => {
+            if (Array.isArray(data)) {
+              const live = data.filter((c: Category) => !deletedCats.has(c.id));
+              setCategories(live);
+            }
+          })
+          .catch(() => {});
       }
 
-      // 2. Fetch from backend /api routes
-      fetch('/api/products')
-        .then((res) => res.json())
-        .then((data) => {
-          if (isMounted && Array.isArray(data) && data.length > 0) {
-            setProducts((prev) => {
-              const remoteIds = new Set(data.map((p: Product) => p.id));
-              const localCustom = prev.filter((p) => p.id.startsWith('prod-custom-') && !remoteIds.has(p.id));
-              return [...localCustom, ...data];
-            });
-          }
-        })
-        .catch((err) => console.warn('Could not load products from API:', err));
+      if (sbProds !== null) {
+        // Authoritative live products from Supabase! Filter out any tombstoned IDs
+        const liveProds = sbProds.filter((p) => !deletedProds.has(p.id));
+        setProducts(liveProds);
+        try {
+          localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(liveProds));
+        } catch {}
+      } else {
+        // Fallback: Fetch products from API
+        fetch('/api/products')
+          .then((res) => res.json())
+          .then((data) => {
+            if (Array.isArray(data)) {
+              const live = data.filter((p: Product) => !deletedProds.has(p.id));
+              setProducts(live);
+            }
+          })
+          .catch(() => {});
+      }
+    } catch (sbErr) {
+      console.warn('Direct Supabase catalog sync error:', sbErr);
+    }
+  };
 
-      fetch('/api/categories')
-        .then((res) => res.json())
-        .then((data) => {
-          if (isMounted && Array.isArray(data) && data.length > 0) {
-            setCategories((prev) => {
-              const remoteIds = new Set(data.map((c: Category) => c.id));
-              const localCustom = prev.filter((c) => c.id.startsWith('cat-') && !remoteIds.has(c.id));
-              return [...data, ...localCustom];
-            });
-          }
-        })
-        .catch((err) => console.warn('Could not load categories from API:', err));
+  // Initial mount load and multi-tab / realtime listeners
+  useEffect(() => {
+    refreshCatalog();
 
-      fetch('/api/blogs')
-        .then((res) => res.json())
-        .then((data) => {
-          if (isMounted && Array.isArray(data) && data.length > 0) {
-            setBlogPosts(data);
+    // 1. Supabase Realtime postgres_changes listener
+    const sb = getSupabaseClient();
+    let channel: any = null;
+    if (sb) {
+      try {
+        channel = sb
+          .channel('public:customer_catalog_sync')
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'categories' },
+            () => {
+              refreshCatalog();
+            }
+          )
+          .on(
+            'postgres_changes',
+            { event: '*', schema: 'public', table: 'products' },
+            () => {
+              refreshCatalog();
+            }
+          )
+          .subscribe();
+      } catch (e) {
+        console.warn('Realtime subscription issue:', e);
+      }
+    }
+
+    // 2. Multi-tab BroadcastChannel listener
+    let broadcast: BroadcastChannel | null = null;
+    try {
+      if (typeof BroadcastChannel !== 'undefined') {
+        broadcast = new BroadcastChannel('apni_catalog_channel');
+        broadcast.onmessage = (event) => {
+          if (event.data === 'sync_catalog') {
+            refreshCatalog();
           }
-        })
-        .catch((err) => console.warn('Could not load blogs from API:', err));
+        };
+      }
+    } catch {}
+
+    // 3. Storage event listener across tabs
+    const handleStorageChange = (e: StorageEvent) => {
+      if (
+        e.key === STORAGE_KEYS.CATEGORIES ||
+        e.key === STORAGE_KEYS.PRODUCTS ||
+        e.key === STORAGE_KEYS.DELETED_CATEGORIES ||
+        e.key === STORAGE_KEYS.DELETED_PRODUCTS
+      ) {
+        refreshCatalog();
+      }
     };
+    window.addEventListener('storage', handleStorageChange);
 
-    loadData();
+    // 4. Refetch latest data whenever customer revisits or focuses window
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        refreshCatalog();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    // 5. Fetch blogs
+    fetch('/api/blogs')
+      .then((res) => res.json())
+      .then((data) => {
+        if (Array.isArray(data) && data.length > 0) {
+          setBlogPosts(data);
+        }
+      })
+      .catch((err) => console.warn('Could not load blogs from API:', err));
 
     return () => {
-      isMounted = false;
+      if (channel && sb) {
+        try {
+          sb.removeChannel(channel);
+        } catch {}
+      }
+      if (broadcast) {
+        try {
+          broadcast.close();
+        } catch {}
+      }
+      window.removeEventListener('storage', handleStorageChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
   }, []);
 
@@ -509,6 +651,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       id: `prod-custom-${Date.now()}`,
       createdAt: new Date().toISOString().split('T')[0],
     };
+    unmarkDeletedProduct(newProduct.id);
     setProducts((prev) => [newProduct, ...prev.filter((p) => p.id !== newProduct.id)]);
     showToast(`Product "${newProduct.name}" created and synced.`);
 
@@ -517,10 +660,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     if (sb) {
       sb.from('products')
         .upsert(mapProductToSupabase(newProduct), { onConflict: 'id' })
-        .then(({ error }) => {
-          if (error) console.warn('Supabase product insert warning:', error.message);
-        })
-        .catch((err) => console.error('Supabase direct insert error:', err));
+        .then(
+          ({ error }) => {
+            if (error) console.warn('Supabase product insert warning:', error.message);
+            broadcastCatalogChange();
+          },
+          (err: any) => console.error('Supabase direct insert error:', err)
+        );
     }
 
     // 2. Persist to server API
@@ -528,7 +674,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newProduct),
-    }).catch((err) => console.error('Failed to sync product to API:', err));
+    })
+      .then(() => broadcastCatalogChange())
+      .catch((err) => console.error('Failed to sync product to API:', err));
+
+    broadcastCatalogChange();
   };
 
   const updateProduct = (id: string, updates: Partial<Product>) => {
@@ -549,38 +699,55 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (sb) {
         sb.from('products')
           .upsert(mapProductToSupabase(updatedProduct), { onConflict: 'id' })
-          .then(({ error }) => {
-            if (error) console.warn('Supabase product update warning:', error.message);
-          })
-          .catch((err) => console.error('Supabase update product error:', err));
+          .then(
+            ({ error }) => {
+              if (error) console.warn('Supabase product update warning:', error.message);
+              broadcastCatalogChange();
+            },
+            (err: any) => console.error('Supabase update product error:', err)
+          );
       }
 
       fetch('/api/products', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedProduct),
-      }).catch((err) => console.error('Failed to update product in API:', err));
+      })
+        .then(() => broadcastCatalogChange())
+        .catch((err) => console.error('Failed to update product in API:', err));
+
+      broadcastCatalogChange();
     }
   };
 
   const deleteProduct = (id: string) => {
-    setProducts((prev) => prev.filter((item) => item.id !== id));
-    showToast('Product deleted.');
+    // 1. Record in tombstone immediately
+    recordDeletedProduct(id);
 
-    const sb = getSupabaseClient();
-    if (sb) {
-      sb.from('products')
-        .delete()
-        .eq('id', id)
-        .then(({ error }) => {
-          if (error) console.warn('Supabase product delete warning:', error.message);
-        })
-        .catch((err) => console.error('Supabase delete product error:', err));
-    }
+    // 2. Remove from local state
+    setProducts((prev) => {
+      const next = prev.filter((item) => item.id !== id);
+      try {
+        localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    showToast('Product removed from customer catalog.');
 
-    fetch(`/api/products/${id}`, { method: 'DELETE' }).catch((err) =>
-      console.error('Failed to delete product from API:', err)
-    );
+    // 3. Delete directly from Supabase
+    deleteProductFromSupabase(id).then((res) => {
+      if (!res.success) {
+        console.warn('Supabase product delete warning:', res.error);
+      }
+      broadcastCatalogChange();
+    });
+
+    // 4. Delete on server API
+    fetch(`/api/products/${id}`, { method: 'DELETE' })
+      .then(() => broadcastCatalogChange())
+      .catch((err) => console.error('Failed to delete product from API:', err));
+
+    broadcastCatalogChange();
   };
 
   const toggleFeatured = (id: string) => {
@@ -608,14 +775,16 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ inStock: nextStock }),
-    }).catch((err) => {
-      console.warn('Direct stock patch failed, falling back to update:', err);
-      fetch('/api/products', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...target, inStock: nextStock }),
-      }).catch((postErr) => console.error('Failed to update product stock:', postErr));
-    });
+    })
+      .then(() => broadcastCatalogChange())
+      .catch((err) => {
+        console.warn('Direct stock patch failed, falling back to update:', err);
+        fetch('/api/products', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...target, inStock: nextStock }),
+        }).catch((postErr) => console.error('Failed to update product stock:', postErr));
+      });
 
     const sb = getSupabaseClient();
     if (sb) {
@@ -624,8 +793,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         .eq('id', id)
         .then(({ error }) => {
           if (error) console.warn('Supabase stock toggle warning:', error);
+          broadcastCatalogChange();
         });
     }
+
+    broadcastCatalogChange();
   };
 
   // Blog Operations
@@ -708,18 +880,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         '/images/cat_gujjar_jaat_style_1790229006717.jpg',
     };
 
-    setCategories((prev) => [...prev.filter((c) => c.id !== newCategory.id), newCategory]);
-    showToast(`Category "${newCategory.name}" added.`);
+    unmarkDeletedCategory(newCategory.id);
+    const updatedCategories = [...categories.filter((c) => c.id !== newCategory.id), newCategory];
+    setCategories(updatedCategories);
+    try {
+      localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(updatedCategories));
+    } catch {}
+
+    showToast(`Category "${newCategory.name}" added to customer catalog.`);
 
     // 1. Persist directly to Supabase
     const sb = getSupabaseClient();
     if (sb) {
       sb.from('categories')
         .upsert(mapCategoryToSupabase(newCategory), { onConflict: 'id' })
-        .then(({ error }) => {
-          if (error) console.warn('Supabase category insert warning:', error.message);
-        })
-        .catch((err) => console.error('Supabase category direct insert failed:', err));
+        .then(
+          ({ error }) => {
+            if (error) console.warn('Supabase category insert warning:', error.message);
+            broadcastCatalogChange();
+          },
+          (err: any) => console.error('Supabase category direct insert failed:', err)
+        );
     }
 
     // 2. Persist to server API
@@ -727,8 +908,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(newCategory),
-    }).catch((err) => console.error('Failed to sync category to API:', err));
+    })
+      .then(() => broadcastCatalogChange())
+      .catch((err) => console.error('Failed to sync category to API:', err));
 
+    broadcastCatalogChange();
     return { success: true, category: newCategory };
   };
 
@@ -750,17 +934,24 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (sb) {
         sb.from('categories')
           .upsert(mapCategoryToSupabase(updatedCat), { onConflict: 'id' })
-          .then(({ error }) => {
-            if (error) console.warn('Supabase category update warning:', error.message);
-          })
-          .catch((err) => console.error('Supabase update category failed:', err));
+          .then(
+            ({ error }) => {
+              if (error) console.warn('Supabase category update warning:', error.message);
+              broadcastCatalogChange();
+            },
+            (err: any) => console.error('Supabase update category failed:', err)
+          );
       }
 
       fetch('/api/categories', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(updatedCat),
-      }).catch((err) => console.error('Failed to update category in API:', err));
+      })
+        .then(() => broadcastCatalogChange())
+        .catch((err) => console.error('Failed to update category in API:', err));
+
+      broadcastCatalogChange();
     }
     return { success: true };
   };
@@ -774,29 +965,38 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: 'Cannot delete the only remaining category in the catalog.' };
     }
 
-    const fallbackCategory = categories.find((c) => c.id !== id)?.slug || 'other';
+    // 1. Record in tombstone
+    recordDeletedCategory(id);
+
+    // 2. Remove from categories state
+    const nextCategories = categories.filter((c) => c.id !== id);
+    setCategories(nextCategories);
+    try {
+      localStorage.setItem(STORAGE_KEYS.CATEGORIES, JSON.stringify(nextCategories));
+    } catch {}
+
+    // 3. Move products of deleted category to another active category
+    const fallbackCategory = nextCategories[0]?.slug || 'other';
     setProducts((prev) =>
       prev.map((p) => (p.category === target.slug ? { ...p, category: fallbackCategory } : p))
     );
 
-    setCategories((prev) => prev.filter((c) => c.id !== id));
-    showToast(`Category "${target.name}" removed.`);
+    showToast(`Category "${target.name}" removed from customer catalog.`);
 
-    const sb = getSupabaseClient();
-    if (sb) {
-      sb.from('categories')
-        .delete()
-        .eq('id', id)
-        .then(({ error }) => {
-          if (error) console.warn('Supabase category delete warning:', error.message);
-        })
-        .catch((err) => console.error('Supabase delete category failed:', err));
-    }
+    // 4. Delete directly from Supabase
+    deleteCategoryFromSupabase(id).then((res) => {
+      if (!res.success) {
+        console.warn('Supabase category delete warning:', res.error);
+      }
+      broadcastCatalogChange();
+    });
 
-    fetch(`/api/categories/${id}`, { method: 'DELETE' }).catch((err) =>
-      console.error('Failed to delete category from API:', err)
-    );
+    // 5. Delete on server API
+    fetch(`/api/categories/${id}`, { method: 'DELETE' })
+      .then(() => broadcastCatalogChange())
+      .catch((err) => console.error('Failed to delete category from API:', err));
 
+    broadcastCatalogChange();
     return { success: true };
   };
 
@@ -902,11 +1102,14 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     localStorage.removeItem(STORAGE_KEYS.CATEGORIES);
     localStorage.removeItem(STORAGE_KEYS.BLOGS);
     localStorage.removeItem(STORAGE_KEYS.MEDIA);
+    localStorage.removeItem(STORAGE_KEYS.DELETED_PRODUCTS);
+    localStorage.removeItem(STORAGE_KEYS.DELETED_CATEGORIES);
     setProducts(initialProducts);
     setCategories(initialCategories);
     setBlogPosts(initialBlogPosts);
     setMediaLibrary(initialMediaItems);
     showToast('Restored default catalog.');
+    broadcastCatalogChange();
   };
 
   return (
@@ -922,6 +1125,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         products,
         categories,
         blogPosts,
+        refreshCatalog,
         mediaLibrary,
         addMediaItem,
         deleteMediaItem,
