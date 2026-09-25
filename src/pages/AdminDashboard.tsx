@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useApp } from '../context/AppContext';
 import { Product, BlogPost, Category, CategorySlug, AffiliatePlatform, ButtonActionText, MediaItem } from '../types';
 import { WPLogin } from '../components/WPLogin';
@@ -52,6 +52,10 @@ import {
   AlertTriangle,
   Clock,
   Zap,
+  Mail,
+  Send,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import {
   checkSupabaseConnection,
@@ -187,6 +191,55 @@ export const AdminDashboard: React.FC = () => {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [credError, setCredError] = useState<string | null>(null);
   const [credSuccess, setCredSuccess] = useState<string | null>(null);
+
+  // Recovery Mail & SMTP state
+  const [isTestingEmail, setIsTestingEmail] = useState(false);
+  const [emailTestResult, setEmailTestResult] = useState<{ success: boolean; message: string } | null>(null);
+  const [showSmtpSettings, setShowSmtpSettings] = useState(false);
+  const [isSavingSmtp, setIsSavingSmtp] = useState(false);
+  const [smtpHost, setSmtpHost] = useState('smtp.hostinger.com');
+  const [smtpPort, setSmtpPort] = useState(465);
+  const [smtpSecure, setSmtpSecure] = useState(true);
+  const [smtpUser, setSmtpUser] = useState('');
+  const [smtpPass, setSmtpPass] = useState('');
+  const [smtpFromName, setSmtpFromName] = useState('APNI PEHCHAAN Security');
+  const [smtpFromEmail, setSmtpFromEmail] = useState('support@apnipehchaan.in');
+  const [hasSmtpConfigured, setHasSmtpConfigured] = useState(false);
+  const [mailProviderMode, setMailProviderMode] = useState<'supabase' | 'smtp' | 'both'>('both');
+  const [isChangingProvider, setIsChangingProvider] = useState(false);
+
+  // Keep local credentials state synced when adminCredentials changes
+  useEffect(() => {
+    setNewUsername(adminCredentials.username);
+    setNewEmail(adminCredentials.email);
+  }, [adminCredentials.username, adminCredentials.email]);
+
+  // Load existing SMTP settings & mail provider mode from server
+  useEffect(() => {
+    fetch('/api/admin/smtp-config')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          if (data.host) setSmtpHost(data.host);
+          if (data.port) setSmtpPort(Number(data.port));
+          if (data.secure !== undefined) setSmtpSecure(Boolean(data.secure));
+          if (data.user) setSmtpUser(data.user);
+          if (data.fromName) setSmtpFromName(data.fromName);
+          if (data.fromEmail) setSmtpFromEmail(data.fromEmail);
+          setHasSmtpConfigured(Boolean(data.passConfigured && data.user));
+        }
+      })
+      .catch(() => {});
+
+    fetch('/api/admin/mail-provider')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && data.mode) {
+          setMailProviderMode(data.mode);
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Edit / Add Product Modal State
   const [isProductModalOpen, setIsProductModalOpen] = useState(false);
@@ -567,6 +620,126 @@ export const AdminDashboard: React.FC = () => {
       setNewPassword('');
       setConfirmPassword('');
       setTimeout(() => setCredSuccess(null), 4000);
+    }
+  };
+
+  // Handle Testing Recovery Email via chosen provider
+  const handleSendTestEmail = async (providerOverride?: 'supabase' | 'smtp') => {
+    setIsTestingEmail(true);
+    setEmailTestResult(null);
+    const chosenProvider = providerOverride || mailProviderMode;
+    try {
+      const res = await fetch('/api/admin/send-test-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: adminCredentials.email,
+          provider: chosenProvider,
+        }),
+      });
+      const data = await res.json();
+      setIsTestingEmail(false);
+      if (res.ok && data.success) {
+        setEmailTestResult({
+          success: true,
+          message: data.message || `Test recovery email dispatched to ${adminCredentials.email}!`,
+        });
+      } else {
+        setEmailTestResult({
+          success: false,
+          message: data.error || 'Failed to dispatch test email.',
+        });
+        if (chosenProvider === 'smtp') {
+          setShowSmtpSettings(true);
+        }
+      }
+    } catch (err: any) {
+      setIsTestingEmail(false);
+      setEmailTestResult({
+        success: false,
+        message: err.message || 'Network error while attempting to send test email.',
+      });
+    }
+  };
+
+  // Change Preferred Recovery Mail Provider
+  const handleChangeProvider = async (mode: 'supabase' | 'smtp' | 'both') => {
+    setMailProviderMode(mode);
+    setIsChangingProvider(true);
+    try {
+      const res = await fetch('/api/admin/mail-provider', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`Recovery mail delivery set to: ${mode.toUpperCase()}`);
+      }
+    } catch {}
+    setIsChangingProvider(false);
+  };
+
+  // Handle Saving SMTP Config
+  const handleSaveSmtp = async (testFirst: boolean = false) => {
+    setIsSavingSmtp(true);
+    setEmailTestResult(null);
+    try {
+      const res = await fetch('/api/admin/smtp-config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          host: smtpHost,
+          port: smtpPort,
+          secure: smtpSecure,
+          user: smtpUser,
+          pass: smtpPass,
+          fromName: smtpFromName,
+          fromEmail: smtpFromEmail,
+          testConnection: testFirst,
+        }),
+      });
+      const data = await res.json();
+      setIsSavingSmtp(false);
+      if (res.ok && data.success) {
+        setHasSmtpConfigured(true);
+        setEmailTestResult({
+          success: true,
+          message: testFirst
+            ? '✓ SMTP connection verified & settings saved successfully!'
+            : '✓ SMTP settings saved successfully!',
+        });
+      } else {
+        setEmailTestResult({
+          success: false,
+          message: data.error || 'Failed to save SMTP configuration.',
+        });
+      }
+    } catch (err: any) {
+      setIsSavingSmtp(false);
+      setEmailTestResult({
+        success: false,
+        message: err.message || 'Failed to connect to SMTP server.',
+      });
+    }
+  };
+
+  // Apply SMTP Presets
+  const applySmtpPreset = (preset: 'hostinger' | 'gmail') => {
+    if (preset === 'hostinger') {
+      setSmtpHost('smtp.hostinger.com');
+      setSmtpPort(465);
+      setSmtpSecure(true);
+      setSmtpFromName('APNI PEHCHAAN Security');
+      if (!smtpFromEmail || smtpFromEmail.includes('@apnipehchaan.in')) {
+        setSmtpFromEmail(smtpUser || 'support@apnipehchaan.in');
+      }
+    } else if (preset === 'gmail') {
+      setSmtpHost('smtp.gmail.com');
+      setSmtpPort(465);
+      setSmtpSecure(true);
+      setSmtpFromName('APNI PEHCHAAN Security');
+      setSmtpFromEmail(smtpUser || adminCredentials.email);
     }
   };
 
@@ -1878,7 +2051,7 @@ CREATE POLICY "Admin full access products" ON public.products FOR ALL USING (tru
                 </div>
 
                 {/* Status Callout */}
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
                   <div className="space-y-0.5">
                     <div className="text-slate-500">Currently Active Login ID:</div>
                     <div className="font-mono font-bold text-slate-900 text-sm">
@@ -1886,26 +2059,362 @@ CREATE POLICY "Admin full access products" ON public.products FOR ALL USING (tru
                     </div>
                   </div>
                   <div className="space-y-0.5">
-                    <div className="text-slate-500">Recovery Email:</div>
-                    <div className="font-mono font-medium text-slate-800">
-                      {adminCredentials.email}
+                    <div className="text-slate-500">Recovery Email (Password Reset):</div>
+                    <div className="font-mono font-medium text-slate-800 flex items-center gap-1.5">
+                      <span>{adminCredentials.email}</span>
+                      <span className="text-[10px] px-1.5 py-0.2 bg-emerald-100 text-emerald-800 rounded font-semibold">Verified</span>
                     </div>
                   </div>
+                  <div className="flex flex-wrap items-center gap-2 pt-1 md:pt-0">
+                    <button
+                      type="button"
+                      onClick={() => handleSendTestEmail()}
+                      disabled={isTestingEmail}
+                      className="px-3 py-1.5 bg-blue-50 border border-blue-200 hover:bg-blue-100 text-[#2271b1] text-xs font-semibold rounded cursor-pointer transition flex items-center gap-1.5 disabled:opacity-50"
+                    >
+                      {isTestingEmail ? (
+                        <>
+                          <span className="w-3 h-3 border-2 border-blue-600/30 border-t-blue-600 rounded-full animate-spin" />
+                          <span>Dispatching...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Mail className="w-3.5 h-3.5 text-[#2271b1]" />
+                          <span>Trigger Test Recovery Mail</span>
+                        </>
+                      )}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (confirm('Reset credentials to factory default (admin / sandeeprana4519@gmail.com / admin@123)?')) {
+                          resetAdminCredentials();
+                          setNewUsername('admin');
+                          setNewEmail('sandeeprana4519@gmail.com');
+                          setNewPassword('');
+                          setConfirmPassword('');
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-semibold rounded cursor-pointer transition text-center"
+                    >
+                      Restore Defaults
+                    </button>
+                  </div>
+                </div>
+
+                {/* Email Test Result Banner */}
+                {emailTestResult && (
+                  <div
+                    className={`p-3 rounded-lg text-xs flex items-start gap-2 ${
+                      emailTestResult.success
+                        ? 'bg-emerald-50 border border-emerald-200 text-emerald-800'
+                        : 'bg-amber-50 border border-amber-200 text-amber-900'
+                    }`}
+                  >
+                    {emailTestResult.success ? (
+                      <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                    )}
+                    <div className="flex-1">
+                      <span>{emailTestResult.message}</span>
+                      {!emailTestResult.success && !showSmtpSettings && (
+                        <button
+                          type="button"
+                          onClick={() => setShowSmtpSettings(true)}
+                          className="ml-2 font-bold underline cursor-pointer text-amber-900 hover:text-black"
+                        >
+                          Configure SMTP Server Now
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Password Reset Service & Email Delivery Provider Selection */}
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                        <Zap className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Password Reset Service & Email Provider</span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500 mt-0.5">
+                        Choose how recovery emails and password reset links are dispatched to <strong>{adminCredentials.email}</strong>.
+                      </p>
+                    </div>
+                    {isChangingProvider && (
+                      <span className="text-[10px] text-amber-600 font-medium animate-pulse">Updating...</span>
+                    )}
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 pt-1">
+                    {/* Option 1: Supabase Auth Email Template */}
+                    <div
+                      onClick={() => handleChangeProvider('supabase')}
+                      className={`p-3 rounded-lg border text-left cursor-pointer transition relative ${
+                        mailProviderMode === 'supabase'
+                          ? 'bg-white border-emerald-500 ring-2 ring-emerald-500/20 shadow-xs'
+                          : 'bg-white border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="font-bold text-xs text-slate-900">Supabase Auth</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase bg-emerald-100 text-emerald-800">
+                          Active & Ready
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-tight">
+                        Managed email infrastructure via Supabase Auth email templates (reset link + magic token).
+                      </p>
+                      <div className="mt-2.5 flex items-center justify-between text-[10px]">
+                        <span className="text-emerald-700 font-semibold flex items-center gap-1">
+                          <CheckCircle className="w-3 h-3" /> Zero Setup
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSendTestEmail('supabase');
+                          }}
+                          className="text-[#2271b1] font-semibold underline hover:text-black cursor-pointer"
+                        >
+                          Test Supabase
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Option 2: Custom SMTP Provider */}
+                    <div
+                      onClick={() => handleChangeProvider('smtp')}
+                      className={`p-3 rounded-lg border text-left cursor-pointer transition relative ${
+                        mailProviderMode === 'smtp'
+                          ? 'bg-white border-amber-500 ring-2 ring-amber-500/20 shadow-xs'
+                          : 'bg-white border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="font-bold text-xs text-slate-900">Custom SMTP</span>
+                        {hasSmtpConfigured ? (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase bg-emerald-100 text-emerald-800">
+                            Configured
+                          </span>
+                        ) : (
+                          <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase bg-slate-100 text-slate-600">
+                            Hostinger/Gmail
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-tight">
+                        Dispatches branded HTML emails with 6-digit OTP directly through your Hostinger or Gmail SMTP.
+                      </p>
+                      <div className="mt-2.5 flex items-center justify-between text-[10px]">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setShowSmtpSettings(true);
+                          }}
+                          className="text-amber-700 font-semibold underline cursor-pointer"
+                        >
+                          {hasSmtpConfigured ? 'Edit Settings' : 'Configure SMTP'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            handleSendTestEmail('smtp');
+                          }}
+                          className="text-[#2271b1] font-semibold underline hover:text-black cursor-pointer"
+                        >
+                          Test SMTP
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Option 3: Dual Dispatch */}
+                    <div
+                      onClick={() => handleChangeProvider('both')}
+                      className={`p-3 rounded-lg border text-left cursor-pointer transition relative ${
+                        mailProviderMode === 'both'
+                          ? 'bg-white border-blue-600 ring-2 ring-blue-600/20 shadow-xs'
+                          : 'bg-white border-slate-200 hover:border-slate-300'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="font-bold text-xs text-slate-900">Dual Dispatch</span>
+                        <span className="text-[9px] px-1.5 py-0.5 rounded font-bold uppercase bg-blue-100 text-blue-800">
+                          Recommended
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-500 leading-tight">
+                        Triggers via both Supabase Auth email template and SMTP server simultaneously for 100% redundancy.
+                      </p>
+                      <div className="mt-2.5 text-[10px] text-blue-700 font-semibold flex items-center gap-1">
+                        <CheckCircle className="w-3 h-3" /> Maximum Reliability
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Collapsible SMTP Configuration Panel */}
+                <div className="border border-slate-200 rounded-lg overflow-hidden bg-white">
                   <button
                     type="button"
-                    onClick={() => {
-                      if (confirm('Reset credentials to factory default (admin / admin@123)?')) {
-                        resetAdminCredentials();
-                        setNewUsername('admin');
-                        setNewEmail('admin@apnipehchaan.in');
-                        setNewPassword('');
-                        setConfirmPassword('');
-                      }
-                    }}
-                    className="px-3 py-1.5 bg-slate-200 hover:bg-slate-300 text-slate-800 text-xs font-semibold rounded cursor-pointer transition text-center"
+                    onClick={() => setShowSmtpSettings(!showSmtpSettings)}
+                    className="w-full px-4 py-3 bg-slate-50 hover:bg-slate-100 text-left flex items-center justify-between text-xs font-semibold text-slate-800 cursor-pointer transition border-b border-slate-100"
                   >
-                    Restore Defaults
+                    <div className="flex items-center gap-2">
+                      <Mail className="w-4 h-4 text-amber-600" />
+                      <span>SMTP Mailer Credentials (Hostinger / Gmail / Custom Server)</span>
+                      {hasSmtpConfigured ? (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 font-bold uppercase">
+                          Configured
+                        </span>
+                      ) : (
+                        <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 font-bold uppercase">
+                          Optional Setup
+                        </span>
+                      )}
+                    </div>
+                    {showSmtpSettings ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                   </button>
+
+                  {showSmtpSettings && (
+                    <div className="p-4 space-y-4 text-xs bg-white">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-2">
+                        <p className="text-slate-500">
+                          Configure outgoing SMTP credentials to ensure password recovery codes and notifications reach <strong className="text-slate-800">{adminCredentials.email}</strong>.
+                        </p>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-slate-400 text-[11px]">Presets:</span>
+                          <button
+                            type="button"
+                            onClick={() => applySmtpPreset('hostinger')}
+                            className="px-2 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded text-[11px] font-semibold cursor-pointer border border-purple-200"
+                          >
+                            Hostinger Webmail
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applySmtpPreset('gmail')}
+                            className="px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 rounded text-[11px] font-semibold cursor-pointer border border-red-200"
+                          >
+                            Gmail SMTP
+                          </button>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                        <div className="sm:col-span-2">
+                          <label className="block text-slate-700 font-medium mb-1">SMTP Host</label>
+                          <input
+                            type="text"
+                            value={smtpHost}
+                            onChange={(e) => setSmtpHost(e.target.value)}
+                            placeholder="smtp.hostinger.com"
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-900 outline-none focus:border-amber-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-slate-700 font-medium mb-1">Port</label>
+                          <input
+                            type="number"
+                            value={smtpPort}
+                            onChange={(e) => setSmtpPort(Number(e.target.value))}
+                            placeholder="465"
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-900 outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-slate-700 font-medium mb-1">SMTP Username / Email</label>
+                          <input
+                            type="text"
+                            value={smtpUser}
+                            onChange={(e) => setSmtpUser(e.target.value)}
+                            placeholder="support@apnipehchaan.in"
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-900 outline-none focus:border-amber-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-slate-700 font-medium mb-1">
+                            SMTP Password / App Password
+                          </label>
+                          <input
+                            type="password"
+                            value={smtpPass}
+                            onChange={(e) => setSmtpPass(e.target.value)}
+                            placeholder="Enter mail password or App Password"
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-900 outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                          <label className="block text-slate-700 font-medium mb-1">Sender Name</label>
+                          <input
+                            type="text"
+                            value={smtpFromName}
+                            onChange={(e) => setSmtpFromName(e.target.value)}
+                            placeholder="APNI PEHCHAAN Security"
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-900 outline-none focus:border-amber-500"
+                          />
+                        </div>
+                        <div>
+                          <label className="block text-slate-700 font-medium mb-1">Sender Email</label>
+                          <input
+                            type="email"
+                            value={smtpFromEmail}
+                            onChange={(e) => setSmtpFromEmail(e.target.value)}
+                            placeholder="support@apnipehchaan.in"
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded text-slate-900 outline-none focus:border-amber-500"
+                          />
+                        </div>
+                      </div>
+
+                      <div className="flex items-center gap-2 pt-1">
+                        <input
+                          type="checkbox"
+                          id="smtp_secure_check"
+                          checked={smtpSecure}
+                          onChange={(e) => setSmtpSecure(e.target.checked)}
+                          className="rounded text-amber-600 focus:ring-amber-500"
+                        />
+                        <label htmlFor="smtp_secure_check" className="text-slate-600 cursor-pointer">
+                          Use Secure SSL/TLS Connection (Recommended for Port 465)
+                        </label>
+                      </div>
+
+                      <div className="flex justify-end items-center gap-2 pt-2 border-t border-slate-100">
+                        <button
+                          type="button"
+                          onClick={() => handleSaveSmtp(true)}
+                          disabled={isSavingSmtp}
+                          className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 font-semibold rounded cursor-pointer transition flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          {isSavingSmtp ? (
+                            <span className="w-3.5 h-3.5 border-2 border-slate-500/30 border-t-slate-700 rounded-full animate-spin" />
+                          ) : (
+                            <Zap className="w-3.5 h-3.5 text-amber-600" />
+                          )}
+                          <span>Verify Connection & Save</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveSmtp(false)}
+                          disabled={isSavingSmtp}
+                          className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded cursor-pointer transition shadow-xs flex items-center gap-1.5 disabled:opacity-50"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          <span>Save Mailer Settings</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Success / Error Alerts */}
@@ -1944,14 +2453,14 @@ CREATE POLICY "Admin full access products" ON public.products FOR ALL USING (tru
 
                     <div>
                       <label className="block text-xs font-semibold text-slate-700 mb-1">
-                        Admin Email Address *
+                        Admin Email Address (Recovery Email) *
                       </label>
                       <input
                         type="email"
                         required
                         value={newEmail}
                         onChange={(e) => setNewEmail(e.target.value)}
-                        placeholder="admin@apnipehchaan.in"
+                        placeholder="sandeeprana4519@gmail.com"
                         className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-lg text-slate-900 focus:bg-white focus:border-amber-500 outline-none"
                       />
                     </div>

@@ -105,6 +105,7 @@ interface AppContextType {
   logoutAdmin: () => void;
   updateAdminCredentials: (username: string, email: string, password: string) => { success: boolean; error?: string };
   resetAdminCredentials: () => void;
+  reloadAdminCredentials: () => Promise<void>;
 
   // Utilities
   resetToDefault: () => void;
@@ -189,7 +190,7 @@ const broadcastCatalogChange = () => {
 
 const DEFAULT_ADMIN_CREDS: AdminCredentials = {
   username: 'admin',
-  email: 'admin@apnipehchaan.in',
+  email: 'sandeeprana4519@gmail.com',
   password: 'admin@123',
 };
 
@@ -1065,6 +1066,33 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     showToast('Logged out from Admin Dashboard.');
   };
 
+  const reloadAdminCredentials = async () => {
+    try {
+      const res = await fetch('/api/admin/credentials');
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.username && data.email) {
+          setAdminCredentials((prev) => {
+            const next = {
+              ...prev,
+              username: data.username,
+              email: data.email,
+            };
+            try {
+              localStorage.setItem(STORAGE_KEYS.ADMIN_CREDS, JSON.stringify(next));
+            } catch {}
+            return next;
+          });
+        }
+      }
+    } catch {}
+  };
+
+  // Sync admin credentials from server on mount
+  useEffect(() => {
+    reloadAdminCredentials();
+  }, []);
+
   const updateAdminCredentials = (username: string, email: string, pass: string) => {
     if (!username.trim()) {
       return { success: false, error: 'Login ID / Username cannot be empty.' };
@@ -1074,7 +1102,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
     const updated = {
       username: username.trim(),
-      email: email.trim() || `${username.trim()}@apnipehchaan.in`,
+      email: email.trim() || 'sandeeprana4519@gmail.com',
       password: pass,
     };
     setAdminCredentials(updated);
@@ -1083,7 +1111,19 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {
       console.error('Failed to update credentials', e);
     }
-    showToast('Admin credentials updated.');
+
+    // Persist to server
+    fetch('/api/admin/credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: updated.username,
+        email: updated.email,
+        password: updated.password,
+      }),
+    }).catch((err) => console.warn('Server credentials sync warning:', err));
+
+    showToast('Admin credentials updated and synced.');
     return { success: true };
   };
 
@@ -1094,6 +1134,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     } catch (e) {
       console.error('Failed to reset credentials', e);
     }
+
+    fetch('/api/admin/credentials', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: DEFAULT_ADMIN_CREDS.username,
+        email: DEFAULT_ADMIN_CREDS.email,
+        password: DEFAULT_ADMIN_CREDS.password,
+      }),
+    }).catch(() => {});
+
     showToast('Admin credentials reset to default.');
   };
 
@@ -1162,6 +1213,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         logoutAdmin,
         updateAdminCredentials,
         resetAdminCredentials,
+        reloadAdminCredentials,
         resetToDefault,
         toastMessage,
         showToast,

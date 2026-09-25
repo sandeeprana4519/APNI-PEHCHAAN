@@ -22,6 +22,23 @@ import {
 } from './src/db/queries.ts';
 import { initialProducts, initialCategories, initialBlogPosts } from './src/data/initialData.ts';
 import { createClient } from '@supabase/supabase-js';
+import {
+  loadAdminCredentials,
+  saveAdminCredentials,
+  createRecoverySession,
+  verifyRecoveryCode,
+  completePasswordReset,
+} from './src/services/adminAuthService.ts';
+import {
+  loadSmtpConfig,
+  saveSmtpConfig,
+  verifySmtp,
+  sendPasswordRecoveryEmail,
+  sendTestEmail,
+  loadProviderConfig,
+  saveProviderConfig,
+  triggerSupabaseAuthRecoveryEmail,
+} from './src/services/mailService.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -580,6 +597,276 @@ async function startServer() {
     } catch (err: any) {
       console.error('Supabase sync error:', err);
       res.status(500).json({ error: err?.message || 'Failed to sync to Supabase' });
+    }
+  });
+
+  // ==========================================
+  // Admin Recovery, SMTP & Credentials APIs
+  // ==========================================
+
+  // 1. Get current admin identity & recovery status
+  app.get('/api/admin/credentials', (req, res) => {
+    try {
+      const creds = loadAdminCredentials();
+      const smtp = loadSmtpConfig();
+      res.json({
+        username: creds.username,
+        email: creds.email,
+        updatedAt: creds.updatedAt,
+        hasSmtpConfigured: Boolean(smtp.host && smtp.user && smtp.pass),
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to read admin credentials' });
+    }
+  });
+
+  // 2. Update admin username, recovery email, and/or password
+  app.post('/api/admin/credentials', (req, res) => {
+    try {
+      const { username, email, password } = req.body;
+      if (!username || !username.trim()) {
+        return res.status(400).json({ error: 'Username is required' });
+      }
+      if (!email || !email.trim()) {
+        return res.status(400).json({ error: 'Recovery email is required' });
+      }
+
+      const updated = saveAdminCredentials(username, email, password);
+      res.json({
+        success: true,
+        message: 'Admin credentials updated successfully',
+        username: updated.username,
+        email: updated.email,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to update credentials' });
+    }
+  });
+
+  // 3. Get current SMTP configuration
+  app.get('/api/admin/smtp-config', (req, res) => {
+    try {
+      const cfg = loadSmtpConfig();
+      res.json({
+        host: cfg.host,
+        port: cfg.port,
+        secure: cfg.secure,
+        user: cfg.user,
+        passConfigured: Boolean(cfg.pass),
+        fromName: cfg.fromName,
+        fromEmail: cfg.fromEmail,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to load SMTP configuration' });
+    }
+  });
+
+  // 3b. Mail Delivery Provider (Supabase Auth vs SMTP vs Both)
+  app.get('/api/admin/mail-provider', (req, res) => {
+    try {
+      const prov = loadProviderConfig();
+      const smtp = loadSmtpConfig();
+      const creds = loadAdminCredentials();
+      res.json({
+        mode: prov.mode,
+        supabaseUrl: prov.supabaseUrl,
+        supabaseConnected: true,
+        smtpConfigured: Boolean(smtp.host && smtp.user && smtp.pass),
+        recoveryEmail: creds.email,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: 'Failed to load mail provider config' });
+    }
+  });
+
+  app.post('/api/admin/mail-provider', (req, res) => {
+    try {
+      const { mode } = req.body;
+      if (mode !== 'supabase' && mode !== 'smtp' && mode !== 'both') {
+        return res.status(400).json({ error: 'Invalid mode. Allowed: supabase, smtp, both' });
+      }
+      const updated = saveProviderConfig({ mode });
+      res.json({
+        success: true,
+        mode: updated.mode,
+        message: `Recovery email provider updated to: ${updated.mode.toUpperCase()}`,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to save provider config' });
+    }
+  });
+
+  // 4. Update SMTP configuration
+  app.post('/api/admin/smtp-config', async (req, res) => {
+    try {
+      const { host, port, secure, user, pass, fromName, fromEmail, testConnection } = req.body;
+      const current = loadSmtpConfig();
+
+      const newConfig = {
+        host: host !== undefined ? host.trim() : current.host,
+        port: port ? Number(port) : current.port,
+        secure: secure !== undefined ? Boolean(secure) : current.secure,
+        user: user !== undefined ? user.trim() : current.user,
+        pass: pass && pass !== '••••••••' ? pass : current.pass,
+        fromName: fromName !== undefined ? fromName.trim() : current.fromName,
+        fromEmail: fromEmail !== undefined ? fromEmail.trim() : current.fromEmail,
+      };
+
+      if (testConnection) {
+        const verifyRes = await verifySmtp(newConfig);
+        if (!verifyRes.success) {
+          return res.status(400).json({
+            success: false,
+            error: verifyRes.error || 'SMTP connection verification failed.',
+          });
+        }
+      }
+
+      saveSmtpConfig(newConfig);
+      res.json({
+        success: true,
+        message: 'SMTP mailer settings saved successfully!',
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to save SMTP configuration' });
+    }
+  });
+
+  // 5. Test send email to admin recovery email
+  app.post('/api/admin/send-test-email', async (req, res) => {
+    try {
+      const creds = loadAdminCredentials();
+      const targetEmail = req.body.email || creds.email;
+      const provider = req.body.provider; // 'supabase' | 'smtp' | 'both'
+      if (!targetEmail) {
+        return res.status(400).json({ error: 'No recovery email address specified.' });
+      }
+
+      const result = await sendTestEmail(targetEmail, provider);
+      if (!result.success) {
+        return res.status(400).json({
+          success: false,
+          providerUsed: result.providerUsed,
+          error: result.error,
+        });
+      }
+
+      res.json({
+        success: true,
+        providerUsed: result.providerUsed,
+        message: `Test email dispatched successfully via ${result.providerUsed} to ${targetEmail}! Please check inbox and spam folder.`,
+        messageId: result.messageId,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to send test email' });
+    }
+  });
+
+  // 6. Request password recovery (Forgot Password)
+  app.post('/api/admin/forgot-password', async (req, res) => {
+    try {
+      const { identifier } = req.body;
+      if (!identifier || !identifier.trim()) {
+        return res.status(400).json({ error: 'Please enter your username or registered recovery email.' });
+      }
+
+      const cleanInput = identifier.trim().toLowerCase();
+      const creds = loadAdminCredentials();
+
+      const isMatch =
+        cleanInput === creds.username.toLowerCase() ||
+        cleanInput === creds.email.toLowerCase();
+
+      if (!isMatch) {
+        return res.status(404).json({
+          success: false,
+          error: `No administrative account found for "${identifier}". Please check the login username or recovery email.`,
+        });
+      }
+
+      // Create OTP verification session
+      const session = createRecoverySession(creds.email, creds.username);
+      const clientIp = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress;
+      const origin = req.get('origin') || `${req.protocol}://${req.get('host')}`;
+
+      // Send the actual recovery email via Supabase Auth and/or Nodemailer SMTP
+      const mailResult = await sendPasswordRecoveryEmail({
+        toEmail: creds.email,
+        username: creds.username,
+        code: session.code,
+        ipAddress: clientIp,
+        origin,
+      });
+
+      // Mask email for user privacy (e.g., s***9@gmail.com)
+      const parts = creds.email.split('@');
+      const name = parts[0] || '';
+      const domain = parts[1] || '';
+      const maskedEmail =
+        name.length > 2
+          ? `${name[0]}***${name[name.length - 1]}@${domain}`
+          : `${name}***@${domain}`;
+
+      res.json({
+        success: true,
+        message: mailResult.message,
+        email: maskedEmail,
+        identifier: creds.username,
+        fullEmail: creds.email,
+        simulated: mailResult.simulated,
+        supabaseTriggered: mailResult.supabaseTriggered,
+        smtpTriggered: mailResult.smtpTriggered,
+        devCode: mailResult.simulated ? session.code : undefined,
+      });
+    } catch (err: any) {
+      console.error('Password recovery error:', err);
+      res.status(500).json({ error: err.message || 'Failed to process password recovery request' });
+    }
+  });
+
+  // 7. Verify 6-digit recovery code
+  app.post('/api/admin/verify-code', (req, res) => {
+    try {
+      const { identifier, code } = req.body;
+      if (!identifier || !code) {
+        return res.status(400).json({ error: 'Identifier and 6-digit verification code are required.' });
+      }
+
+      const result = verifyRecoveryCode(identifier, code);
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
+
+      res.json({
+        success: true,
+        message: 'Recovery code verified successfully! You may now set your new password.',
+        token: result.token,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Verification failed' });
+    }
+  });
+
+  // 8. Complete password reset
+  app.post('/api/admin/reset-password', (req, res) => {
+    try {
+      const { token, newPassword } = req.body;
+      if (!token || !newPassword) {
+        return res.status(400).json({ error: 'Reset token and new password are required.' });
+      }
+
+      const result = completePasswordReset(token, newPassword);
+      if (!result.success) {
+        return res.status(400).json({ error: result.error });
+      }
+
+      res.json({
+        success: true,
+        message: `Password for ${result.username} has been updated successfully! You can now log in with your new password.`,
+        username: result.username,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message || 'Failed to reset password' });
     }
   });
 
