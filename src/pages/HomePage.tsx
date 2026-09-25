@@ -5,7 +5,7 @@ import { ProductGrid } from '../components/ProductGrid';
 import { BlogPreview } from '../components/BlogPreview';
 import { AffiliateDisclosureNotice } from '../components/AffiliateDisclosureNotice';
 import { useApp } from '../context/AppContext';
-import { Sparkles, Star, TrendingUp, ArrowRight } from 'lucide-react';
+import { Sparkles, Star, ArrowRight } from 'lucide-react';
 
 export const HomePage: React.FC = () => {
   const { products, navigate } = useApp();
@@ -61,11 +61,6 @@ export const HomePage: React.FC = () => {
       {/* 4. Complete Curated Catalog Section (Full responsive catalog with search & platform filters) */}
       <section className="py-16 bg-[#F8F9FA] border-b border-slate-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
-          <div className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-amber-700 -mb-4">
-            <TrendingUp className="w-4 h-4 text-amber-600" />
-            <span>High-Demand Affiliate Offers</span>
-          </div>
-
           <ProductGrid
             products={allPublished}
             title="Curated Products & Affiliate Offers"

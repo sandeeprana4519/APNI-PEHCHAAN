@@ -73,25 +73,10 @@ export const Hero: React.FC = () => {
             <div className="relative rounded-2xl overflow-hidden shadow-2xl border border-slate-800/80 bg-slate-900 group">
               <img
                 src={HERO_IMAGE}
-                alt="Contemporary Indian cultural fashion and lifestyle accessories"
-                className="w-full aspect-[4/3] sm:aspect-[16/10] lg:aspect-[4/3] object-cover object-center group-hover:scale-102 transition-transform duration-500"
+                alt="APNI PEHCHAAN - Discover Products That Match Your Style & Identity"
+                className="w-full aspect-square object-cover object-center group-hover:scale-102 transition-transform duration-500"
                 referrerPolicy="no-referrer"
               />
-              <div className="absolute inset-0 bg-gradient-to-t from-slate-950/90 via-slate-950/30 to-transparent pointer-events-none" />
-
-              {/* Quiet Floating Showcase Marker */}
-              <div className="absolute bottom-4 left-4 right-4 p-4 bg-slate-950/80 backdrop-blur-md rounded-xl border border-slate-800/80 flex items-center justify-between text-xs">
-                <div>
-                  <div className="text-white font-semibold">Veer Heritage Series 2026</div>
-                  <div className="text-slate-400 text-[11px]">Solid Brass & Silver Kadas, Safas, Kurtas</div>
-                </div>
-                <button
-                  onClick={() => navigate('category-detail', { categorySlug: 'gujjar' })}
-                  className="px-3 py-1.5 bg-amber-500 text-slate-950 font-bold rounded text-xs hover:bg-amber-400 transition-colors cursor-pointer"
-                >
-                  View Collection
-                </button>
-              </div>
             </div>
           </div>
         </div>

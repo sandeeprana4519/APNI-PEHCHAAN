@@ -64,6 +64,7 @@ import {
 } from '../services/supabaseService.ts';
 
 const PRESET_CATEGORY_IMAGES = [
+  { label: 'Lifestyle & Identity Showcase', url: '/images/hero_lifestyle_identity_1790325324964.jpg' },
   { label: 'Kada & Accessories', url: '/images/cat_gujjar_jaat_style_1790229006717.jpg' },
   { label: 'Rajputana Heritage', url: '/images/cat_rajput_heritage_1790229019313.jpg' },
   { label: 'Ethnic Kurta & Silk', url: '/images/cat_yadav_brahmin_1790229031674.jpg' },

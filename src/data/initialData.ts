@@ -1,6 +1,6 @@
 import { Category, Product, BlogPost, MediaItem } from '../types';
 
-export const HERO_IMAGE = '/images/hero_apni_pehchaan_1790228991906.jpg';
+export const HERO_IMAGE = '/images/hero_lifestyle_identity_1790325324964.jpg';
 export const ACCESSORY_IMAGE = '/images/cat_gujjar_jaat_style_1790229006717.jpg';
 export const RAJPUT_IMAGE = '/images/cat_rajput_heritage_1790229019313.jpg';
 export const ETHNIC_IMAGE = '/images/cat_yadav_brahmin_1790229031674.jpg';
